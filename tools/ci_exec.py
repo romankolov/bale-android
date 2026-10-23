@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from collections import deque
 
 
@@ -31,6 +32,16 @@ def main():
         code = process.wait()
     if code and os.getenv('GITHUB_ACTIONS') == 'true':
         text = 'Compiler/failure diagnostics:\n' + ''.join(diagnostics)[-12000:] + '\nLog tail:\n' + ''.join(tail)[-12000:]
+        for pattern in ('**/build/test-results/**/TEST-*.xml', '**/build/outputs/androidTest-results/**/*.xml'):
+            for report in Path('.').glob(pattern):
+                try:
+                    root = ET.parse(report).getroot()
+                    for case in root.iter('testcase'):
+                        for failure in list(case.findall('failure')) + list(case.findall('error')):
+                            text += f"\n{case.get('classname')}.{case.get('name')}:\n{failure.text or failure.get('message', '')}\n"
+                except (ET.ParseError, OSError):
+                    continue
+        text = text[-48000:]
         text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print(f'::error title=Build or test command failed::{text}', flush=True)
     return code

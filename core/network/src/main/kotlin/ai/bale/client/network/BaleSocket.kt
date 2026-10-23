@@ -92,7 +92,7 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
             delay(backoff + Random.nextLong(0, 100))
         }
     }
-    private suspend fun runConnection(token: String, onReady: () -> Unit) = coroutineScope {
+    private suspend fun runConnection(token: String, onReady: () -> Unit): Unit = coroutineScope {
         val frames = Channel<ByteArray>(64)
         val opened = CompletableDeferred<Unit>()
         val request = Request.Builder().url(url)
