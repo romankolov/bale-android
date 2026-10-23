@@ -488,7 +488,7 @@ internal class DefaultMessengerRepository(
             )
         } else {
             val full = session.directory.fullGroup(peer)
-            val rawMembers = runCatching { session.directory.members(peer) }.getOrDefault(full.membersList)
+            val rawMembers = runCatching { session.directory.members(peer) }.getOrDefault(full.members17List)
             val userMap = runCatching {
                 session.messaging.users(rawMembers.map { UserPeers.newBuilder().setUid(it.uid).build() })
                     .usersList.associateBy { it.id }
@@ -503,7 +503,7 @@ internal class DefaultMessengerRepository(
                 isChannel = full.groupType == 1,
                 isMember = if (full.hasIsMember()) full.isMember.value else true,
                 isOwner = full.ownerUid == account.id,
-                membersCount = full.membersCount.value.takeIf { it > 0 } ?: rawMembers.size,
+                membersCount = full.membersCount10.value.takeIf { it > 0 } ?: rawMembers.size,
                 inviteUrl = invite,
                 members = rawMembers.map { m ->
                     val u = userMap[m.uid]

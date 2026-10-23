@@ -51,7 +51,7 @@ internal class DefaultAuthRepository(
         }
     }
 
-    override suspend fun restore() = lock.withLock {
+    override suspend fun restore(): Unit = lock.withLock {
         database.messenger().recoverInterruptedOutbox()
         val saved = vault.load()
         if (saved == null) {
@@ -59,6 +59,7 @@ internal class DefaultAuthRepository(
             withContext(Dispatchers.IO) {
                 database.clearAllTables()
                 mediaDir?.deleteRecursively()
+                Unit
             }
         } else {
             session = saved
@@ -151,7 +152,7 @@ internal class DefaultAuthRepository(
         api.terminateAllSessions()
     }
 
-    override suspend fun signOut() = lock.withLock {
+    override suspend fun signOut(): Unit = lock.withLock {
         // Attempt bounded remote revocation when connected; never block offline logout.
         if (session != null && socket.state.value == Connection.Connected) {
             runCatching { withTimeoutOrNull(2_000) { DirectoryApi(socket, socket.sessionId).remoteSignOut() } }
