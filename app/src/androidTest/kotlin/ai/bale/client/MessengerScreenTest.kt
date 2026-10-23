@@ -7,7 +7,6 @@ import ai.bale.client.feature.messaging.MessengerViewModel
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
 import androidx.paging.PagingData
@@ -90,7 +89,9 @@ class MessengerScreenTest {
             assertNotNull(repository.queuedReply)
             assertEquals(99L, repository.queuedReply?.rid)
         }
-        compose.onNodeWithTag("message-composer").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        compose.onNodeWithTag("message-composer").assert(
+            SemanticsMatcher("empty composer text") { it.config[SemanticsProperties.EditableText].text.isEmpty() }
+        )
         compose.waitUntil(5_000) {
             runCatching { compose.onNodeWithText("answer from UI").assertIsDisplayed(); true }.getOrDefault(false)
         }
