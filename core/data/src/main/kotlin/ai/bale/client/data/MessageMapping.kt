@@ -283,13 +283,32 @@ private fun extractAttachment(message: Message2): Attachment? = when {
     message.hasCrowdFundingMessage() && message.crowdFundingMessage.hasPhoto() ->
         extractAttachment(Message2.newBuilder().setDocumentMessage(message.crowdFundingMessage.photo).build())
     message.hasStickerMessage() -> {
+        // image256/image512 are ImageLocation references (never raw bytes): a received sticker is
+        // downloadable by file id, with fastPreview as the inline fallback only.
         val sticker = message.stickerMessage
-        val preview = when {
-            sticker.image256.size() > 0 -> sticker.image256.toByteArray()
-            sticker.image512.size() > 0 -> sticker.image512.toByteArray()
-            else -> sticker.fastPreview.value.toByteArray()
+        val preview = sticker.fastPreview.value.toByteArray()
+        val location = when {
+            sticker.hasImage256() && sticker.image256.hasFileLocation() -> sticker.image256
+            sticker.hasImage512() && sticker.image512.hasFileLocation() -> sticker.image512
+            else -> null
         }
-        Attachment(0, 0, 0, "Sticker", "image/webp", preview.size, AttachmentKind.Sticker, thumbnail = preview)
+        val file = location?.fileLocation?.takeIf { it.fileId != 0L }
+        when {
+            file != null -> Attachment(
+                fileId = file.fileId,
+                accessHash = file.accessHash,
+                storageVersion = if (file.hasFileStorageVersion()) file.fileStorageVersion.value else 0,
+                name = "Sticker",
+                mimeType = "image/webp",
+                sizeBytes = if (location.fileSize > 0) location.fileSize else preview.size,
+                kind = AttachmentKind.Sticker,
+                width = location.width,
+                height = location.height,
+                thumbnail = preview,
+            )
+            preview.isNotEmpty() -> Attachment(0, 0, 0, "Sticker", "image/webp", preview.size, AttachmentKind.Sticker, thumbnail = preview)
+            else -> null
+        }
     }
     message.hasAnimatedStickerMessage() -> {
         val preview = message.animatedStickerMessage.fastPreview.value.toByteArray()
