@@ -732,6 +732,7 @@ private fun MessageBubble(
 private fun SearchDialog(state: SearchState, hasChat: Boolean, onSearch: (String, Boolean) -> Unit, onClose: () -> Unit, onOpen: (SearchHit) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var currentOnly by rememberSaveable { mutableStateOf(hasChat) }
+    val keyboard = LocalSoftwareKeyboardController.current
     AlertDialog(onDismissRequest = onClose, title = { Text(stringResource(R.string.search_messages)) }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(query, { if (it.length <= 256) query = it }, label = { Text(stringResource(R.string.search_messages)) }, singleLine = true, modifier = Modifier.testTag("server-search-query"))
