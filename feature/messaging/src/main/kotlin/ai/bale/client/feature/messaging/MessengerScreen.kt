@@ -590,6 +590,7 @@ private fun ChatPane(
                 }
             }
         }
+        val chatKeyboard = LocalSoftwareKeyboardController.current
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
             OutlinedTextField(input, {
                 if (it.length <= 4096) {
