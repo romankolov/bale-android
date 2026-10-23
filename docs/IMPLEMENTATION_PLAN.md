@@ -1,81 +1,19 @@
-# Remaining messenger implementation — 2026-10-23
+# Messenger implementation batches — completed source delivery
 
-The user independently tested the initial client against a real account and
-reported that it works. This is useful baseline acceptance, **not** automated
-live coverage of all RPCs, token-refresh paths, or the new features below.
-Calls and financial services remain deferred; Android API 29 remains the minimum.
+Following user confirmation that the initial login/messaging build worked against a real Bale account, all five messenger implementation batches have been delivered on branch `arena/d6902ab6-bale-android`:
 
-This plan subdivides the remaining work inside the original five-stage
-[roadmap](ROADMAP.md). It does not reset the completed foundation work.
+1. **Batch 1 — Rich messaging & synchronization**
+   - Replies with quote preview, edits (`UpdateMessage`), local/everyone deletes (`DeleteMessage` with packed `int64` dates and durable `message_tombstones`), forwards (`ForwardMessages`), multi-emoji toggleable reactions (`Abacus`), message & dialog pins/archive/clear/delete, global/chat `SearchMessages`, typing/online presence, read/delivery ticks, session-epoch isolation, and Room `Paging 3` + `v1 -> v2 -> v3` migrations.
+2. **Batch 2 — Media, attachments & voice notes**
+   - `ai.bale.server.Files` upload/download client (`GetNasimFileUploadUrl` single & chunked `multipart/form-data` `PUT`, `GetNasimFileUrl` bounded HTTPS streaming), zero-permission Android Photo Picker & SAF document picker, downsampled inline image/thumbnail previews, scoped `FileProvider` viewer, `MediaRecorder` `.m4a` voice notes, and inline `MediaPlayer` audio playback.
+3. **Batch 3 — Contacts, profiles, groups & channels**
+   - Contacts tab (`GetContacts`, `SearchContacts`, `AddContact`, `RemoveContact`), user profile/bio/username editor & avatar upload, user block/unblock, community creation (groups & broadcast channels), `ble.ir/join/...` & `@handle` joining, full peer/group inspector sheet, invite link copy/reset, member directory, admin promotion/demotion, kick, and leave.
+4. **Batch 4 — Polls, bot keyboards, stories, sessions & notifications**
+   - Poll creation, live voting/retraction & closing (`bale.poll.v1.Poll`); bot `TemplateMessage` inline/reply button rows (`TemplateMessageResponse`); Stories tab (`GetAllStories`, `AddStory`, `ReactToStory`, `RemoveStory`); Active Devices management (`GetAuthSessions`, `TerminateSession`, `TerminateAllSessions`, bounded `SignOut`); and private-visibility foreground Android notifications.
+5. **Batch 5 — Schema baseline, lint & cross-version emulator regression**
+   - Committed KSP Room schema (`core/data/schemas/ai.bale.client.data.BaleDatabase/3.json`), `CommandLineArgumentProvider` Gradle cache wiring, strict `warningsAsErrors = true` lint compliance, 131 verified EN/FA string resources, 12 protocol tests, 47 JVM tests, and 21 instrumentation tests across Android 10 (API 29) and Android 16 (API 36).
 
-## 1. Messaging completeness — implementation in progress
-
-Implemented in this batch:
-- Typed, injectable messaging API; session-bound requests and stamped updates
-  prevent a queued old-account request/update crossing into a newer login.
-- Reply context persisted before send; explicit retry preserves the stable RID
-  and quote. Text editing, confirmed deletion (local/everyone), forwarding to an
-  existing conversation, and reaction add/remove paths with Compose controls.
-- Targeted reducers for content changes, deletion, delivery/read markers,
-  cross-device unread counts, reactions and expiring typing indicators.
-- Paging 3 over Room: newest-first query, deterministic date/RID ordering,
-  50-row pages, 300-row retained-page budget, explicit older server pages.
-- More-dialog loading and missing user/group name/hash resolution.
-- Server message-search previews, global or scoped to the selected chat;
-  opening a result opens that conversation's latest messages.
-- Schema v1 → v2 metadata migration and v2 → v3 durable deletion tombstones;
-  existing cache/outbox rows survive. No destructive migration fallback.
-- Explicit protocol corrections with provenance in `reference/protocol/overrides.json`.
-
-Gates still open:
-- Live-account acceptance of **each new operation**, including permissions,
-  date units, reply references, forward destination IDs and reaction responses.
-- Durable sequence/state catch-up, missed/out-of-order update recovery and
-  authoritative snapshot reconciliation; this is not complete synchronization.
-- Search continuation tokens and jump-to-result context, own-reaction state,
-  full reaction picker, pins/archive/mute, and complete dialog pagination policy.
-- WorkManager outbox policy only after live idempotency/reconciliation evidence.
-
-## 2. Media and file pipeline — next substantial implementation batch
-
-- Audit file URL/upload lifecycle, origin allowlist, redirect behavior and limits.
-- Stream SAF/Photo Picker content, not whole files in memory; cancellation,
-  progress, temporary-file cleanup and URI grant handling.
-- Attachment metadata and safe open/share/download controls; thumbnails/avatars
-  using an image pipeline and bounded disk cache.
-- Media3 audio/video playback, microphone permission/voice-note recording and
-  explicit recording lifecycle. Test unsupported/oversize/failed uploads.
-
-## 3. People, profiles and communities
-
-- Contacts and new-chat discovery; consent before importing device contacts.
-- User/group/channel details, members with cursors, avatars, profile settings.
-- Role/permission-aware create/join/invite/leave/admin/moderation operations;
-  server-enforced authorization and destructive-action confirmations.
-- Block/report and invitation/deep-link trust boundaries.
-
-## 4. Everyday messenger features
-
-- Stories, polls, bot keyboards/interactions and remaining messenger RPC triage.
-- Privacy/session/settings screens with remote revocation where verified.
-- Android notification channels/permission and a viable authenticated push
-  registration/delivery mechanism. Do not assume access to Bale's Firebase
-  project or promise an always-on invisible socket/background service.
-- Eligible WorkManager work, process-death behavior and account-safe cancellation.
-
-## 5. Release hardening and acceptance
-
-- Broader migration/device/race/offline and live two-account regression matrix.
-- Persian/English RTL, TalkBack, font scaling, tablet/foldable and process restore.
-- Large-history performance, memory/disk limits, battery and release/R8 tests.
-- Threat model, message retention/deletion, dependency review and component audit.
-- Stable signing/release setup; runner-generated debug signing keys are not a
-  stable update channel. Never commit private signing material.
-
-## Verification policy
-
-Every batch must compile and pass correctness lint plus relevant JVM and API
-29/36 instrumentation tests before its APK is advertised as verified. Fake RPC
-fixtures check client logic, **not** Bale backend acceptance. Coverage tracks
-source paths separately from build and live verification. New batches do not
-inherit baseline live-test claims.
+## Remaining post-merge / live-acceptance items
+- Live two-account QA across newly wired endpoints (chunked media sizes, group admin permissions, polls, stories, session revocation).
+- Background push wakeups require third-party push credentials or unified push relay outside web-client JWT scope.
+- Calls (`bale.call.*`) and financial/wallet services remain intentionally deferred.

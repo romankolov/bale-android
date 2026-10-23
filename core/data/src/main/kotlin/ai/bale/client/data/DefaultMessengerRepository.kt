@@ -1,6 +1,7 @@
 package ai.bale.client.data
 
 import ai.bale.client.domain.*
+import ai.bale.client.domain.Peer
 import ai.bale.client.network.BaleRpc
 import ai.bale.client.network.DirectoryApi
 import ai.bale.client.network.FilesApi

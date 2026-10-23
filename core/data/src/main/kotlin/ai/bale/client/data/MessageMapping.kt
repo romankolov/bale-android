@@ -112,8 +112,11 @@ private fun extractAttachment(message: Message2): Attachment? = when {
     }
     message.hasStickerMessage() -> {
         val sticker = message.stickerMessage
-        val preview = sticker.image256.toByteArray()
-            .ifEmpty { sticker.image512.toByteArray().ifEmpty { sticker.fastPreview.value.toByteArray() } }
+        val preview = when {
+            sticker.image256.size() > 0 -> sticker.image256.toByteArray()
+            sticker.image512.size() > 0 -> sticker.image512.toByteArray()
+            else -> sticker.fastPreview.value.toByteArray()
+        }
         Attachment(0, 0, 0, "Sticker", "image/webp", preview.size, AttachmentKind.Sticker, thumbnail = preview)
     }
     message.hasAnimatedStickerMessage() -> {

@@ -24,6 +24,7 @@ def main():
     log.parent.mkdir(parents=True, exist_ok=True)
     tail = deque(maxlen=100)
     diagnostics = deque(maxlen=100)
+    per_file = {}
     with log.open('w') as output:
         process = subprocess.Popen(sys.argv[2:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    text=True, errors='replace', bufsize=1)
@@ -33,7 +34,10 @@ def main():
             tail.append(line)
             if any(marker in line.lower() for marker in (
                     'e: ', 'error:', 'what went wrong', 'execution failed', 'failed', 'incompatible', 'was compiled')):
-                diagnostics.append(line)
+                key = line.split(':', 2)[1] if line.startswith('e: file://') else line[:32]
+                per_file[key] = per_file.get(key, 0) + 1
+                if per_file[key] <= 8:
+                    diagnostics.append(line)
         code = process.wait()
     if code and os.getenv('GITHUB_ACTIONS') == 'true':
         annotate('Build diagnostics', ''.join(diagnostics))

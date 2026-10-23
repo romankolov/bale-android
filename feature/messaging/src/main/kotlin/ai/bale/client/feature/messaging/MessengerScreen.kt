@@ -171,7 +171,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                     }
                     TextButton(onClick = { forwarding = message; action = null }) { Text(stringResource(R.string.forward_message)) }
                     TextButton(onClick = { viewModel.pinMessage(message, true); action = null }) { Text(stringResource(R.string.pin_message_action)) }
-                    if (message.poll != null && !message.poll.closed && message.senderId == account?.id) {
+                    if (message.poll?.closed == false && message.senderId == account?.id) {
                         TextButton(onClick = { viewModel.closePoll(message); action = null }) { Text(stringResource(R.string.close_poll)) }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {

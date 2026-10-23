@@ -44,9 +44,6 @@ jobs:
       - name: Report exported Room schema
         if: always()
         run: python3 tools/ci_schema_summary.py
-      - name: Report exported Room schema
-        if: always()
-        run: python3 tools/ci_schema_summary.py
       - name: Summarize executed tests
         if: always()
         run: python3 tools/ci_test_summary.py

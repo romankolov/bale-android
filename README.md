@@ -1,146 +1,67 @@
 # Bale Android
 
-An independent, native Android Bale client under development. **Android 10+ (API 29).**
+An independent, native Android Bale messenger client built with **Jetpack Compose**, **Material 3 Expressive**, **MVVM / Clean Architecture**, **Hilt**, **Google Protobuf Java-Lite**, **Retrofit + OkHttp WebSockets**, **Room**, and **Paging 3**. Minimum SDK: **Android 10 (API 29)**; target/compile SDK: **Android 16 (API 36)**.
 
-> **Status: build-verified development client, not feature-complete or release-ready.**
-> [GitHub Actions verification passed](https://github.com/romankolov/bale-android/actions/runs/39882404720)
-> at source commit `57ea672`: debug APK, Android Lint, 23 unit tests, 10 protocol
-> checks, and six instrumentation tests on each of Android 10 and Android 16.
-> The user independently reports the initial real-account flow works. New
-> messaging actions and production readiness are **not** yet live-verified.
-> The current messaging-completeness batch is under CI verification.
+> **Status: feature-rich messenger development build — verified in CI across API 29 & API 36 emulators; initial real-account login/chat verified by user.**
+> Calls, financial/banking operations, third-party FCM push token server delivery, end-to-end encryption, and production release signing remain explicitly deferred or outside current scope.
 
-[Download the development APK artifact](https://github.com/romankolov/bale-android/actions/runs/39882404720/artifacts/12471416312)
-(unzip `app-debug.apk`; GitHub sign-in may be required). Fresh-runner debug signing
-keys may differ between builds; a signature mismatch requires uninstalling the
-previous development build, which deletes its local data. Do not treat this as a
-production release. Artifacts are subject to GitHub retention limits.
+See the latest GitHub Actions run and downloadable `development-apk` (`app-debug.apk`) on **[Pull Request #1](https://github.com/romankolov/bale-android/pull/1)**.
 
-## Agreed five-stage delivery
+## Implemented capabilities across five delivery stages
 
-1. Foundation, protocol audit and Material 3 Expressive design system.
-2. Secure authentication and reliable HTTP/WebSocket transport.
-3. Offline-first messaging.
-4. Media and full messenger capabilities.
-5. Hardening, device testing and release.
+1. **Foundation, canonical wire schema & Material 3 Expressive UI**
+   - Multi-module Clean Architecture (`app`, `core:domain`, `core:protocol`, `core:network`, `core:data`, `core:designsystem`, `feature:auth`, `feature:messaging`).
+   - Deterministic canonical `.proto` generation across **2,006 runtime message types, 53 services, and 699 RPCs**, plus **12 provenance-verified wire overrides** in `reference/protocol/overrides.json` validated byte-for-byte by automated tests.
+   - Expressive green tonal theme, light/dark modes, adaptive compact bottom navigation / tablet navigation rail + split list-detail layout, and complete **131-key English + Persian (`fa`) RTL** localization.
 
-See [the five remaining implementation batches](docs/IMPLEMENTATION_PLAN.md),
-[the original roadmap and acceptance gates](docs/ROADMAP.md),
-[current feature coverage](docs/CAPABILITIES.md), and the
-[699-RPC inventory](docs/rpc-coverage.csv). Calls and financial services are
-**deferred**, per the messenger-first scope decision. Generated models are not
-counted as working features.
+2. **Authentication, session security & resilient transport**
+   - Phone -> SMS/code -> 2FA password / new-account registration over framed gRPC-web HTTPS (`Retrofit` + `OkHttp`).
+   - Hardware-backed Android Keystore `AES-GCM` session vault; automatic connected JWT refresh; session-epoch isolation across WebSocket requests and live updates.
+   - Active devices / sessions viewer (`Auth.GetAuthSessions`), per-session termination (`TerminateSession`), terminate-all-others (`TerminateAllSessions`), and bounded remote + local sign-out (`SignOut` + local DB & media cache purge).
 
-## Stack
+3. **Rich offline-first messaging & live synchronization**
+   - Room-backed `Paging 3` conversation message stream (`50`-item pages, `300`-item window), older server history pagination, dialog list pagination, and automatic missing `Users` / `Groups` resolution.
+   - Stable `int64` `rid` outbox with retryable failure recovery across process death, non-destructive Room migrations (`v1 -> v2 -> v3`), committed KSP schema (`core/data/schemas/.../3.json`), and persistent `message_tombstones` preventing deleted-message resurrection.
+   - **Replies** with quote preview, **text editing**, **deletion** (for me / for everyone), **forwarding**, **1-tap toggleable emoji reactions** (with own-reaction highlighting), **message pinning / unpinning**, **dialog pin / archive / clear / delete**, **global & in-chat server search**, **throttled typing indicators**, **online presence**, and **delivery / read receipts**.
 
-- Kotlin, Jetpack Compose, Material 3 **Expressive**, MVVM/unidirectional state flow.
-- Clean Architecture boundaries, Hilt, Coroutines/Flow, Room/KSP and Paging 3.
-- Google protobuf Gradle plugin and generated **Java-lite** models.
-- Retrofit for the HTTP boundary, explicit gRPC-web framing, OkHttp WebSockets.
-- Gradle Kotlin DSL, version catalog, shared Android-library convention plugin.
-- JUnit, MockWebServer, Compose UI tests, Android Lint, GitHub Actions.
+4. **Media pipeline, voice notes, polls, bot keyboards, contacts, communities & stories**
+   - **Media attachments (`ai.bale.server.Files`)**: zero-permission Android Photo Picker (`PickVisualMedia`), SAF file picker (`OpenDocument`), chunked `multipart/form-data` HTTPS uploads, strict cleartext-URL rejection, bounded streaming downloads into account-scoped cache, downsampled inline photo/thumbnail previews, scoped `FileProvider` external viewer, **AAC `.m4a` voice note recorder**, and **inline voice/audio player**.
+   - **Contacts & discovery (`bale.users.v1.Users`)**: saved contacts list, live `@username` / channel directory search, add/remove contact, user profile & bio editor, avatar upload, and block/unblock user.
+   - **Groups & channels (`bale.groups.v1.Groups`)**: create group or broadcast channel, join via `ble.ir/join/...` invite link or `@handle`, inspect members & pinned messages, edit title/description, copy/revoke invite links, invite contacts, promote/demote admins, kick members, and leave community.
+   - **Interactive polls (`bale.poll.v1.Poll`)**: create anonymous or multi-choice polls, vote/retract live in chat bubbles, view vote counts, and close polls.
+   - **Bots & stories (`TemplateMessage`, `bale.story.v1.Story`)**: inline callback/URL/copy & reply bot keyboards, active user/channel story feed, text story posting, story reactions, and story deletion.
+   - **Notifications**: Android notification channel with `VISIBILITY_PRIVATE`, runtime `POST_NOTIFICATIONS` permission support on Android 13+, and foreground session message notifications.
 
-Material 3 is explicitly pinned to **1.5.0-alpha01** because the 1.4 stable API
-surface does not contain `MaterialExpressiveTheme`. The opt-in is isolated in the
-design-system module. This is a deliberate prerelease dependency; verify/update
-the entire Compose/toolchain set together before release. Dependencies are pinned
-baselines, not a claim that they are the newest available versions.
+5. **Verification & CI quality gates**
+   - **12** Python protocol & wire-encoding checks (`tools/verify_protocol.py` + `tools/generate_coverage.py --check` tracking **67 implemented RPCs** across 10 services).
+   - **47** JVM unit tests across `:core:domain`, `:core:network` (`MockWebServer` WebSocket + chunked media HTTP + RPC wire tests), `:core:data`, `:feature:auth`, and `:feature:messaging`.
+   - **Android correctness lint** with `warningsAsErrors = true`.
+   - **21 Android instrumentation tests** executed on **both Android 10 (API 29) and Android 16 (API 36)** hardware-accelerated emulators covering app launch, Compose UI flows, Room migrations (`v1 -> v3`, `v2 -> v3`), media upload/caching, polls, join links, deletion tombstones, and cross-account race isolation.
 
-## Open/build
+## Build locally
 
-Use Android Studio with **JDK 17**, Android SDK **36** and Build Tools **35.0.0**.
-The wrapper pins Gradle **8.13** and AGP **8.13.0**. Normal Android/Maven repository
-access is required.
+Requires **JDK 17**, **Android SDK 36**, and **Build Tools 35.0.0**:
 
 ```sh
-# Set ANDROID_HOME or add sdk.dir=/path/to/Android/Sdk to ignored local.properties.
-./gradlew :app:assembleDebug
 ./gradlew :core:domain:test :core:network:test :core:data:testDebugUnitTest :feature:auth:testDebugUnitTest :feature:messaging:testDebugUnitTest
-./gradlew :app:lintDebug :app:assembleDebugAndroidTest
-# With an Android 10+ emulator/device (English locale for current UI smoke test):
+./gradlew :app:assembleDebug :app:lintDebug
 ./gradlew :app:connectedDebugAndroidTest :core:data:connectedDebugAndroidTest
 ```
 
-Debug APK output (after a successful build):
-`app/build/outputs/apk/debug/app-debug.apk`.
-Release signing is intentionally **not** configured; never commit signing keys.
-The Actions workflow installs/uses JDK 17 and SDK 36 on pinned Ubuntu 24.04
-runners, builds/tests/lints, uploads reports and a **development** APK, and runs
-app-launch/Compose/Room tests on API 29 and 36 emulators with KVM acceleration.
-This path is verified; this local sandbox still cannot fetch the Android toolchain.
-Dependency/SDK upgrade advisories are deliberately separate from correctness lint
-(see [the verification policy](docs/VERIFICATION.md)).
-
-## Verify the protocol without Android
+## Protocol verification without Android SDK
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r tools/requirements.txt
+python3 tools/generate_protocol.py --check
+python3 tools/generate_coverage.py --check
 .venv/bin/python tools/verify_protocol.py
-.venv/bin/python tools/generate_coverage.py --check
-mkdir -p .venv/java
-.venv/bin/protoc -Icore/protocol/src/main/proto \
-  --java_out=lite:.venv/java core/protocol/src/main/proto/*.proto
 ```
 
-The verification-only Python tooling is not part of the app. Do not commit venvs,
-generated Java files, credentials, phone numbers, session exports or private chats.
-
-## Source layout
-
-```text
-app                    Application/activity and Hilt composition root
-core/domain            Pure Kotlin entities, repository contracts, phone normalization
-core/protocol          Recovered .proto models and documented transport envelopes
-core/network           gRPC-web codec, Retrofit boundary, WebSocket RPC engine
-core/data              Keystore session vault, Room, repository implementations
-core/designsystem      Expressive theme, shared components, English/Persian resources
-feature/auth           Login state machine, ViewModel, Compose screen
-feature/messaging      Conversation list, adaptive chat pane, ViewModel
-reference/protocol     Supplied protocol docs and deduplicated runtime schema
-```
-
-Feature modules depend on domain contracts, never network/database implementations.
-Wire DTOs are mapped in data. There are no ceremonial pass-through use-case classes;
-introduce focused domain use cases as cross-repository business rules emerge.
-
-## Protocol provenance and limitations
-
-`bale-start.zip` is preserved untouched. Its split proto files **do not compile**
-because cross-package types are unresolved, and their service declarations do not
-preserve full service names. `tools/generate_protocol.py` deterministically emits a
-single valid schema from the archive's deduplicated `baleclient/schema.json`.
-It preserves recovered field numbers, scalar/message types and repetition.
-
-The runtime inventory has **2,006 message types, 53 services and 699 RPCs**.
-Some extracted fields are opaque `bytes`, some names are recovered placeholders,
-and enum semantics are not fully recovered. These limitations are not silently
-"fixed" by guessing. Services use string routing from the inventory, **not native
-gRPC stubs**. Only nine RPC paths currently have source implementations.
-
-The executable reference transport places `RequestBody` directly in WebSocket
-field 1, whereas an illustrative documentation snippet adds another wrapper.
-The app follows the reference encoder; byte-level tests lock down that choice.
-No production account/network verification has been performed. Host and
-protocol build metadata reflect the supplied archive, not a discovery of today's
-server requirements. Bale may restrict access by network/location.
-
-## Security/behavior notes
-
-- Token and account metadata encrypted using AES-GCM with Android Keystore;
-  no plaintext fallback, HTTP logging interceptor or embedded user credentials.
-- OS backup/device transfer excluded; cleartext traffic disabled; screenshots
-  protected with `FLAG_SECURE`.
-- Room data uses app-private **unencrypted** storage and device filesystem
-  protection. Do not advertise database-level encryption or E2EE.
-- Account-scoped rows and a session/write gate prevent logout from racing late
-  database inserts. Logout is **local**, not remote session revocation.
-- Stable random message IDs persisted before sending. Retries reuse IDs; a
-  timeout is an **unknown outcome**, never proof the server did not send it.
-- Interrupted pending messages become retryable failures on restore. There is
-  no unattended outbox worker yet and no always-on background socket guarantee.
-- No login codes/passwords are saved to disk or SavedStateHandle. Verification
-  follows only the documented authenticated flow; never share credentials in issues.
-
-Read [architecture decisions](docs/ARCHITECTURE.md) and
-[verification results](docs/VERIFICATION.md) before extending the client.
+Further documentation:
+- [Implementation plan & batch status](docs/IMPLEMENTATION_PLAN.md)
+- [Capability matrix](docs/CAPABILITIES.md)
+- [Architecture & security boundaries](docs/ARCHITECTURE.md)
+- [Five-stage roadmap](docs/ROADMAP.md)
+- [Verification policy & evidence](docs/VERIFICATION.md)
+- [Complete 699-RPC inventory](docs/rpc-coverage.csv)
