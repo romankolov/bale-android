@@ -11,6 +11,9 @@ import androidx.lifecycle.ViewModelStore
 import androidx.paging.PagingData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.text.AnnotatedString
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -32,17 +35,22 @@ class MessengerScreenTest {
     }
     private class FakeMessenger(private val peer: Peer, private val message: ChatMessage) : MessengerRepository {
         override val connection = MutableStateFlow(Connection.Connected)
+        private val items = MutableStateFlow(listOf(message))
         var queuedReply: ChatMessage? = null
         var queuedText: String? = null
         override fun conversations() = flowOf(listOf(Conversation(peer, "Test conversation", message.text, message.date, 0)))
         override fun messages(peer: Peer) = flowOf(listOf(message))
-        override fun pagedMessages(peer: Peer) = flowOf(PagingData.from(listOf(message)))
+        override fun pagedMessages(peer: Peer) = items.map { PagingData.from(it) }
         override fun typingUsers(peer: Peer) = flowOf(emptySet<Int>())
         override suspend fun refreshConversations() = Unit
         override suspend fun loadMoreConversations() = 0
         override suspend fun loadHistory(peer: Peer, before: Long) = 1
         override suspend fun loadOlderHistory(peer: Peer) = 0
-        override suspend fun queue(peer: Peer, text: String, reply: ChatMessage?): Long { queuedReply = reply; queuedText = text; return 123 }
+        override suspend fun queue(peer: Peer, text: String, reply: ChatMessage?): Long {
+            queuedReply = reply; queuedText = text
+            items.value = listOf(ChatMessage(peer.key, 123, 7, text, message.date + 1000, Delivery.Pending)) + items.value
+            return 123
+        }
         override suspend fun retry(peer: Peer, rid: Long) = Unit
         override suspend fun markRead(peer: Peer, date: Long) = Unit
         override suspend fun edit(peer: Peer, message: ChatMessage, text: String) = Unit
@@ -70,7 +78,8 @@ class MessengerScreenTest {
             assertNotNull(repository.queuedReply)
             assertEquals(99L, repository.queuedReply?.rid)
         }
-        compose.onNodeWithText("answer from UI").assertDoesNotExist()
+        compose.onNodeWithTag("message-composer").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        compose.onNodeWithText("answer from UI").assertIsDisplayed()
     }
     @Test fun serverSearchShowsMatchingMessagePreview() {
         show()

@@ -34,6 +34,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.compose.itemKey
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
@@ -222,6 +223,18 @@ private fun ChatPane(
     var draft by rememberSaveable(peer.key) { mutableStateOf("") }
     var editingDraft by remember(composer.edit?.rid) { mutableStateOf(composer.edit?.text.orEmpty()) }
     val listState = rememberLazyListState()
+    var followNewest by remember { mutableStateOf(true) }
+    val newestRid = messages.itemSnapshotList.items.firstOrNull { it.peerKey == peer.key }?.rid
+    LaunchedEffect(listState, messages) {
+        snapshotFlow {
+            Triple(listState.isScrollInProgress, listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0,
+                messages.loadState.prepend.endOfPaginationReached)
+        }.collect { (scrolling, atStart, noNewerPages) -> if (scrolling) followNewest = atStart && noNewerPages }
+    }
+    LaunchedEffect(newestRid) {
+        if (newestRid != null && followNewest && !listState.isScrollInProgress && messages.loadState.prepend.endOfPaginationReached)
+            listState.scrollToItem(0)
+    }
     val visibleIncoming by remember(messages, listState, me, peer.key) { derivedStateOf {
         listState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
             if (item.index < messages.itemCount) messages.peek(item.index) else null

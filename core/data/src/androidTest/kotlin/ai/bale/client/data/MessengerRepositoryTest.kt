@@ -66,21 +66,21 @@ class MessengerRepositoryTest {
             }
         }
     }
-    @Before fun setup() = runBlocking {
+    @Before fun setup() = runBlocking<Unit> {
         database = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext<Context>(), BaleDatabase::class.java).build()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         rpc = FakeRpc(); auth = FakeAuth()
         repository = DefaultMessengerRepository(auth, rpc, database, scope, AccountGate())
         withTimeout(10_000) { rpc.updates.subscriptionCount.first { it > 0 } }
     }
-    @After fun teardown() = runBlocking { scope.coroutineContext[Job]?.cancelAndJoin(); database.close() }
+    @After fun teardown() = runBlocking<Unit> { scope.coroutineContext[Job]?.cancelAndJoin(); database.close() }
     private suspend fun seed() {
         rpc.history = listOf(original)
         repository.loadHistory(peer)
     }
     private suspend fun row(rid: Long) = database.messenger().message(7, peer.key, rid)!!
 
-    @Test fun replyRetryPreservesQuoteAndStableRidAcrossAmbiguousFailure() = runBlocking {
+    @Test fun replyRetryPreservesQuoteAndStableRidAcrossAmbiguousFailure() = runBlocking<Unit> {
         seed()
         val rid = repository.queue(peer, "answer", row(99).domain())
         rpc.failSend = true
@@ -96,7 +96,7 @@ class MessengerRepositoryTest {
         assertEquals("Sent", row(rid).delivery)
         assertEquals("question", row(rid).domain().quote?.text)
     }
-    @Test fun confirmedDeletionLeavesTombstoneThatStaleHistoryCannotResurrect() = runBlocking {
+    @Test fun confirmedDeletionLeavesTombstoneThatStaleHistoryCannotResurrect() = runBlocking<Unit> {
         seed()
         repository.delete(peer, row(99).domain(), false)
         repository.loadHistory(peer)
@@ -107,7 +107,7 @@ class MessengerRepositoryTest {
         assertTrue(request.justMine.value)
         assertEquals(listOf(1000L), request.dates.datesList)
     }
-    @Test fun remoteEditDeleteAndReactionUpdatesReduceCachedMessages() = runBlocking {
+    @Test fun remoteEditDeleteAndReactionUpdatesReduceCachedMessages() = runBlocking<Unit> {
         seed()
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
         rpc.push(Update.newBuilder().setMessageContentChanged(MessageContentChanged.newBuilder()
@@ -122,7 +122,7 @@ class MessengerRepositoryTest {
         withTimeout(10_000) { database.messenger().messages(7, peer.key).first { it.single().deleted } }
         assertEquals("", row(99).text)
     }
-    @Test fun readReceiptsAndServerUnreadCounterStayAccountScoped() = runBlocking {
+    @Test fun readReceiptsAndServerUnreadCounterStayAccountScoped() = runBlocking<Unit> {
         val dao = database.messenger()
         val sent = MessageEntity(7, peer.key, 88, 7, "outgoing", 900, "Sent", true)
         dao.messages(listOf(sent, sent.copy(accountId = 8)))
@@ -135,7 +135,7 @@ class MessengerRepositoryTest {
             .setUnreadCounter(Int32Value.of(3))).build())
         withTimeout(10_000) { dao.conversations(7).first { it.single().unread == 3 } }
     }
-    @Test fun typingUpdatesStopWithoutBeingPersistedAsChatMessages() = runBlocking {
+    @Test fun typingUpdatesStopWithoutBeingPersistedAsChatMessages() = runBlocking<Unit> {
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
         rpc.push(Update.newBuilder().setTyping(Typing.newBuilder().setPeer(p).setUid(42).setTypingType(1)).build())
         assertEquals(setOf(42), withTimeout(10_000) { repository.typingUsers(peer).first { it.isNotEmpty() } })
@@ -143,7 +143,7 @@ class MessengerRepositoryTest {
         withTimeout(10_000) { repository.typingUsers(peer).first { it.isEmpty() } }
         assertTrue(database.messenger().messages(7, peer.key).first().isEmpty())
     }
-    @Test fun lateHistoryResponseCannotWriteIntoAnotherAccount() = runBlocking {
+    @Test fun lateHistoryResponseCannotWriteIntoAnotherAccount() = runBlocking<Unit> {
         rpc.history = listOf(original)
         rpc.historyWait = CompletableDeferred()
         val fetch = async(start = CoroutineStart.UNDISPATCHED) { repository.loadHistory(peer) }
@@ -154,7 +154,7 @@ class MessengerRepositoryTest {
         assertTrue(database.messenger().messages(7, peer.key).first().isEmpty())
         assertTrue(database.messenger().messages(8, peer.key).first().isEmpty())
     }
-    @Test fun bufferedUpdateFromOldSessionCannotEnterNewAccountCache() = runBlocking {
+    @Test fun bufferedUpdateFromOldSessionCannotEnterNewAccountCache() = runBlocking<Unit> {
         auth.account.value = Account(8, "second fixture")
         rpc.sessionId = 2
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
@@ -165,7 +165,7 @@ class MessengerRepositoryTest {
         withTimeout(10_000) { repository.typingUsers(peer).first { it.isNotEmpty() } }
         assertTrue(database.messenger().messages(8, peer.key).first().isEmpty())
     }
-    @Test fun deleteBeforeHistoryIsLoadedStillBlocksStaleMessageResurrection() = runBlocking {
+    @Test fun deleteBeforeHistoryIsLoadedStillBlocksStaleMessageResurrection() = runBlocking<Unit> {
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
         rpc.push(Update.newBuilder().setMessageDelete(MessageDelete.newBuilder().setPeer(p)
             .setDates(Dates2.newBuilder().addDates(1000))).build())
@@ -175,7 +175,7 @@ class MessengerRepositoryTest {
         seed()
         assertTrue(database.messenger().messages(7, peer.key).first().isEmpty())
     }
-    @Test fun addAndRemoveReactionsPersistServerCounts() = runBlocking {
+    @Test fun addAndRemoveReactionsPersistServerCounts() = runBlocking<Unit> {
         seed()
         val message = row(99).domain()
         repository.react(peer, message, "👍", false)
