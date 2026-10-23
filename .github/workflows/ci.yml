@@ -78,6 +78,8 @@ jobs:
       - name: Use hosted runner Android SDK
         run: echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
       - run: python3 tools/ci_exec.py ci-logs/sdk.log sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Install emulator runtime with inspectable diagnostics
+        run: python3 tools/ci_exec.py ci-logs/emulator-sdk.log sdkmanager 'emulator' 'platform-tools' 'platforms;android-${{ matrix.api }}' 'build-tools;37.0.0' 'system-images;android-${{ matrix.api }};google_apis;x86_64'
       - name: Enable hardware acceleration
         run: sudo chmod 666 /dev/kvm
       - name: Run Compose, launch and Room tests on Android ${{ matrix.api }}
