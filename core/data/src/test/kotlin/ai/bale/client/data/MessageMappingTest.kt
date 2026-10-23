@@ -169,10 +169,14 @@ class MessageMappingTest {
         assertEquals(4242L, mapped.stickerCollectionAccessHash)
         assertEquals(6, mapped.repliesCount)
         // image256 is an ImageLocation on the wire; the receiver resolves it as a downloadable ref.
-        assertEquals(1234L, mapped.attachment?.fileId)
-        assertEquals(5678L, mapped.attachment?.accessHash)
-        assertEquals(AttachmentKind.Sticker, mapped.attachment?.kind)
-        assertArrayEquals(byteArrayOf(4, 5, 6), mapped.attachment?.thumbnail)
+        val stickerAttachment = mapped.attachment!!
+        assertEquals(1234L, stickerAttachment.fileId)
+        assertEquals(5678L, stickerAttachment.accessHash)
+        assertEquals(AttachmentKind.Sticker, stickerAttachment.kind)
+        assertEquals(4096, stickerAttachment.sizeBytes)
+        assertEquals(160, stickerAttachment.width)
+        // No inline bytes accompany a location-backed sticker.
+        assertEquals(0, stickerAttachment.thumbnail.size)
 
         val small = Avatar.newBuilder().setSmallImage(
             SmallImage.newBuilder()
