@@ -601,9 +601,8 @@ private fun ConversationList(
             )
         }
         if (chats.isEmpty()) Text(
-            stringResource(if (folderId != 0 || filter != DialogFilter.All) R.string.no_filtered_chats else R.string.no_chats),
-            Modifier.padding(24.dp),
-            modifier = Modifier.testTag("empty_chat_list"),
+            text = stringResource(if (folderId != 0 || filter != DialogFilter.All) R.string.no_filtered_chats else R.string.no_chats),
+            modifier = Modifier.fillMaxWidth().padding(24.dp).testTag("empty_chat_list"),
         )
         LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(chats, key = { it.peer.key }) { chat ->

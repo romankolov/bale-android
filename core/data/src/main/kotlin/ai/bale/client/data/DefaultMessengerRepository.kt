@@ -128,7 +128,7 @@ internal class DefaultMessengerRepository(
     }
 
     private suspend fun hydrateUsers(session: ActiveClients, userIds: List<Int>) {
-        val missing = userIds.filter { it != 0 && "${session.account.id}:${it}" !in userNames }.distinct()
+        val missing = userIds.filter { it != 0 && !userNames.containsKey("${session.account.id}:${it}") }.distinct()
         if (missing.isEmpty()) return
         safely {
             val response = session.messaging.users(missing.map { UserPeers.newBuilder().setUid(it).build() })
@@ -890,7 +890,7 @@ internal class DefaultMessengerRepository(
             ScheduledMessageItem(
                 taskId = task.taskId,
                 peerKey = peer.key,
-                text = contentText(task.payload.sendMessage.message).ifBlank { "Scheduled message" },
+                text = contentText(task.payload.taskSendMessage.sendMessage.message).ifBlank { "Scheduled message" },
                 status = task.status,
             )
         }

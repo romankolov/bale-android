@@ -584,6 +584,8 @@ internal fun PeerInspectorSheet(
     onTogglePin: () -> Unit = {},
     onToggleMute: () -> Unit = {},
 ) {
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var handleDraft by remember(profile.peer.key, profile.handle) { mutableStateOf(profile.handle) }
     val communityAvatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -591,9 +593,6 @@ internal fun PeerInspectorSheet(
             runCatching { readPickedUri(context, uri, forcePhotoOrVideo = true) }.onSuccess(onUploadCommunityAvatar)
         }
     }
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
     var editTitle by remember(profile.peer.key, profile.title) { mutableStateOf(profile.title) }
     var editAbout by remember(profile.peer.key, profile.about) { mutableStateOf(profile.about) }
 
