@@ -92,10 +92,12 @@ class MessengerScreenTest {
         compose.onNodeWithTag("message-composer").assert(
             SemanticsMatcher("empty composer text") { it.config[SemanticsProperties.EditableText].text.isEmpty() }
         )
-        compose.waitUntil(5_000) {
-            runCatching { compose.onNodeWithText("answer from UI").assertIsDisplayed(); true }.getOrDefault(false)
+        // The bubble is the newest row of a Paging 3 list that can briefly empty while the
+        // pending insert refreshes, so poll for existence instead of a single display snapshot.
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithText("answer from UI").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("answer from UI").assertIsDisplayed()
+        compose.onAllNodesWithText("answer from UI").onFirst().assertExists()
     }
 
     @Test fun serverSearchShowsMatchingMessagePreview() {
