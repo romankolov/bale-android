@@ -7,6 +7,7 @@ import ai.bale.client.domain.LinkPreviewInfo
 import ai.bale.client.domain.PollOptionVoters
 import ai.bale.client.domain.ReactionVoter
 import ai.bale.client.domain.SavedGif
+import ai.bale.client.domain.SharedMediaTab
 import ai.bale.client.domain.ScheduledMessageItem
 import ai.bale.client.domain.StickerPack
 
