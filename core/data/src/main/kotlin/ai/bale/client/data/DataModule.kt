@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
+import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
@@ -22,7 +23,7 @@ import javax.inject.Singleton
 internal class DataRuntime(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).writeTimeout(90, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .addInterceptor { chain ->
             val request = chain.request().newBuilder().header("Origin", BaleEndpoint.ORIGIN)
@@ -34,11 +35,18 @@ internal class DataRuntime(context: Context) {
         }.build()
     private val transport = AuthTransport(Retrofit.Builder().baseUrl(BaleEndpoint.HTTP).client(client).build().create(AuthHttpApi::class.java))
     private val socket = BaleSocket(client, scope)
-    private val database = Room.databaseBuilder(context, BaleDatabase::class.java, "bale.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+    private val database = Room.databaseBuilder(context, BaleDatabase::class.java, "bale.db")
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     private val gate = AccountGate()
-    val auth: AuthRepository = DefaultAuthRepository(SessionVault(context), transport, socket, database, scope, gate)
-    val messenger: MessengerRepository = DefaultMessengerRepository(auth, socket, database, scope, gate)
+    private val mediaDir = File(context.cacheDir, "media")
+    private val notifier = MessageNotifier(context)
+    private val authImpl = DefaultAuthRepository(SessionVault(context), transport, socket, database, scope, gate, mediaDir, notifier)
+    val auth: AuthRepository = authImpl
+    val messenger: MessengerRepository = DefaultMessengerRepository(
+        authImpl, socket, database, scope, gate, client, mediaDir, notifier, authImpl::currentToken,
+    )
 }
+
 @Module
 @InstallIn(SingletonComponent::class)
 internal object DataModule {

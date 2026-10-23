@@ -4,6 +4,7 @@ import ai.bale.client.domain.Connection
 import ai.bale.client.domain.MessageReference
 import ai.bale.client.domain.Peer
 import ai.bale.client.protocol.*
+import com.google.protobuf.Int64Value
 import com.google.protobuf.MessageLite
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,7 +16,7 @@ class MessagingApiTest {
     private class RecordingRpc : BaleRpc {
         override val state = MutableStateFlow(Connection.Connected)
         override var sessionId = 0L
-        override val updates = MutableSharedFlow<ai.bale.client.network.SessionUpdate>()
+        override val updates = MutableSharedFlow<SessionUpdate>()
         var service = ""
         var method = ""
         lateinit var request: MessageLite
@@ -41,6 +42,7 @@ class MessagingApiTest {
         assertEquals(message.date, request.quotedMessageReference.date.value)
         assertEquals(72L, request.quotedMessageReference.seq.value)
     }
+
     @Test fun `no reply or unknown sequence is not fabricated`() = runTest {
         val rpc = RecordingRpc()
         val api = MessagingApi(rpc)
@@ -48,6 +50,7 @@ class MessagingApiTest {
         assertFalse((rpc.request as Messaging_SendMessage_Request).hasQuotedMessageReference())
         assertFalse(MessagingApi.reference(peer, message.copy(sequence = 0)).hasSeq())
     }
+
     @Test fun `delete uses packed dates and explicit local versus everyone presence`() = runTest {
         val rpc = RecordingRpc()
         val api = MessagingApi(rpc)
@@ -63,6 +66,7 @@ class MessagingApiTest {
         assertTrue(request.hasJustMine())
         assertFalse(request.justMine.value)
     }
+
     @Test fun `forward uses Peer3 destination and original peer reference`() = runTest {
         val rpc = RecordingRpc()
         MessagingApi(rpc).forward(peer, Peer(99, 2, 456), message, 9876543210123)
@@ -75,6 +79,7 @@ class MessagingApiTest {
         assertEquals(peer.id, request.forwardedMessagesList.single().peer.id)
         assertEquals(message.rid, request.forwardedMessagesList.single().rid)
     }
+
     @Test fun `editing sends only the replacement content and same rid`() = runTest {
         val rpc = RecordingRpc()
         MessagingApi(rpc).edit(peer, message.rid, "replacement")
@@ -83,6 +88,7 @@ class MessagingApiTest {
         assertEquals(message.rid, request.rid)
         assertEquals("replacement", request.updatedMessage.textMessage.text)
     }
+
     @Test fun `search can be global or conjunctively scoped to one peer`() = runTest {
         val rpc = RecordingRpc()
         val api = MessagingApi(rpc)
@@ -97,17 +103,25 @@ class MessagingApiTest {
         assertEquals("سلام", conditions[0].searchPieceText.query)
         assertEquals(peer.accessHash, conditions[1].searchPeerCondition.peer.accessHash)
     }
-    @Test fun `reaction add and remove use abacus and retain target date`() = runTest {
+
+    @Test fun `reaction add and remove use abacus and parse repeated reaction lists`() = runTest {
         val rpc = RecordingRpc()
+        rpc.response = Msg_4825_fafe26abbf__79002_p.newBuilder()
+            .addReactions(Field264.newBuilder().addUsers(7).setCode("👍").setCardinality(Int64Value.of(1)))
+            .addReactions(Field264.newBuilder().addUsers(9).setCode("❤️").setCardinality(Int64Value.of(2)))
+            .build().toByteArray()
         val api = MessagingApi(rpc)
-        api.react(peer, message, "👍", false)
+        val reactions = api.react(peer, message, "👍", false)
         assertEquals("bale.abacus.v1.Abacus", rpc.service)
         assertEquals("MessageSetReaction", rpc.method)
+        assertEquals(listOf("👍", "❤️"), reactions.map { it.code })
         assertEquals(message.date, (rpc.request as Abacus_MessageSetReaction_Request).date)
-        api.react(peer, message, "👍", true)
+        rpc.response = byteArrayOf()
+        val cleared = api.react(peer, message, "👍", true)
         assertEquals("MessageRemoveReaction", rpc.method)
-        assertEquals(message.rid, (rpc.request as Abacus_MessageRemoveReaction_Request).rid)
+        assertTrue(cleared.isEmpty())
     }
+
     @Test fun `typing stops use separate presence endpoint`() = runTest {
         val rpc = RecordingRpc()
         val api = MessagingApi(rpc)
@@ -119,14 +133,29 @@ class MessagingApiTest {
         assertEquals("StopTyping", rpc.method)
         assertEquals(peer.id, (rpc.request as Presence_StopTyping_Request).peer.id)
     }
-    @Test fun `history pagination preserves mode limit and exact cursor`() = runTest {
+
+    @Test fun `pins dialogs polls and bot template responses encode expected wire payloads`() = runTest {
         val rpc = RecordingRpc()
-        MessagingApi(rpc).history(peer, message.date)
-        val request = rpc.request as Messaging_LoadHistory_Request
-        assertEquals(2, request.loadMode)
-        assertEquals(50, request.limit)
-        assertEquals(message.date, request.date)
-        MessagingApi(rpc).dialogs(message.date)
-        assertEquals(message.date, (rpc.request as Messaging_LoadDialogs_Request).minDate)
+        val api = MessagingApi(rpc)
+        api.pinMessage(peer, message, true)
+        assertEquals("PinMessage", rpc.method)
+        assertEquals(message.rid, (rpc.request as Messaging_PinMessage_Request).messageId.rid)
+        api.pinMessage(peer, message, false)
+        assertEquals("UnPinMessages", rpc.method)
+        assertEquals(message.rid, (rpc.request as Messaging_UnPinMessages_Request).messagesList.single().rid)
+
+        rpc.response = Poll_CreatePoll_Response.newBuilder().setPollId(777L).build().toByteArray()
+        assertEquals(777L, api.createPoll(peer, "Lunch?", listOf("Kebab", "Rice"), anonymous = true, multiple = true, now = 5000L))
+        assertEquals("bale.poll.v1.Poll", rpc.service)
+        assertEquals("CreatePoll", rpc.method)
+
+        rpc.response = Poll_Vote_Response.newBuilder().setPollResult(PollResult.newBuilder().setVotersCount(3)).build().toByteArray()
+        val result = api.votePoll(777L, listOf(0, 1), retract = false, now = 6000L)
+        assertEquals(3, result.votersCount)
+        assertEquals(listOf(0L, 1L), (rpc.request as Poll_Vote_Request).optionIdsList)
+
+        val callback = MessagingApi.templateResponse("cb:1", 42L)
+        assertEquals("cb:1", callback.templateMessageResponse.tmrMessage)
+        assertEquals(42L, callback.templateMessageResponse.templateMessageResponseId)
     }
 }

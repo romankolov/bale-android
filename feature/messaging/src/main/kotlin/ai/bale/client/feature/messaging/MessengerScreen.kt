@@ -3,8 +3,17 @@ package ai.bale.client.feature.messaging
 import ai.bale.client.core.designsystem.R
 import ai.bale.client.designsystem.Notice
 import ai.bale.client.domain.*
+import android.Manifest
 import android.content.ClipData
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,13 +26,17 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -46,10 +59,12 @@ import java.time.format.FormatStyle
 fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     val chats by viewModel.filtered.collectAsStateWithLifecycle()
     val allChats by viewModel.conversations.collectAsStateWithLifecycle()
+    val section by viewModel.section.collectAsStateWithLifecycle()
     val selected by viewModel.selected.collectAsStateWithLifecycle()
     val messages = viewModel.pagedMessages.collectAsLazyPagingItems()
     val account by viewModel.account.collectAsStateWithLifecycle()
     val connection by viewModel.connection.collectAsStateWithLifecycle()
+    val onlineUsers by viewModel.onlineUsers.collectAsStateWithLifecycle()
     val loading by viewModel.loading.collectAsStateWithLifecycle()
     val queuing by viewModel.queuing.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
@@ -59,26 +74,88 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     val typing by viewModel.typingUsers.collectAsStateWithLifecycle()
     val moreHistory by viewModel.moreHistory.collectAsStateWithLifecycle()
     val moreDialogs by viewModel.moreDialogs.collectAsStateWithLifecycle()
+    val downloaded by viewModel.downloadedFiles.collectAsStateWithLifecycle()
+    val contacts by viewModel.contacts.collectAsStateWithLifecycle()
+    val directoryResults by viewModel.directoryResults.collectAsStateWithLifecycle()
+    val stories by viewModel.stories.collectAsStateWithLifecycle()
+    val ownProfile by viewModel.ownProfile.collectAsStateWithLifecycle()
+    val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val inspected by viewModel.inspectedProfile.collectAsStateWithLifecycle()
+
     var confirmLogout by remember { mutableStateOf(false) }
+    var showNewCommunity by remember { mutableStateOf(false) }
+    var showCreatePoll by remember(selected?.key) { mutableStateOf(false) }
     var action by remember(selected?.key, account?.id) { mutableStateOf<ChatMessage?>(null) }
     var deleting by remember(selected?.key) { mutableStateOf<ChatMessage?>(null) }
     var forwarding by remember(selected?.key) { mutableStateOf<ChatMessage?>(null) }
-    var reacting by remember(selected?.key) { mutableStateOf<Pair<ChatMessage, String>?>(null) }
+
+    val context = LocalContext.current
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    BackHandler(enabled = selected != null) { viewModel.back() }
-    LaunchedEffect(lifecycle) {
-        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            try { awaitCancellation() } finally { viewModel.stopTyping() }
+    val audioPlayer = remember { AudioClipPlayer() }
+    val voiceRecorder = remember(context) { VoiceNoteRecorder(context) }
+    var recordingVoice by remember(selected?.key) { mutableStateOf(false) }
+    val playingPath by audioPlayer.playingPath.collectAsStateWithLifecycle()
+
+    DisposableEffect(Unit) {
+        onDispose {
+            audioPlayer.stop()
+            voiceRecorder.stopAndDiscard()
         }
     }
+
+    BackHandler(enabled = selected != null || section != AppSection.Chats) {
+        if (selected != null) viewModel.back() else viewModel.selectSection(AppSection.Chats)
+    }
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            try { awaitCancellation() } finally {
+                viewModel.stopTyping()
+                if (recordingVoice) {
+                    voiceRecorder.stopAndDiscard()
+                    recordingVoice = false
+                }
+            }
+        }
+    }
+
     if (confirmLogout) AlertDialog(
         onDismissRequest = { confirmLogout = false }, title = { Text(stringResource(R.string.logout_title)) },
         text = { Text(stringResource(R.string.logout_detail)) },
         confirmButton = { TextButton(onClick = { confirmLogout = false; viewModel.signOut() }) { Text(stringResource(R.string.logout)) } },
         dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text(stringResource(R.string.cancel)) } },
     )
+    if (showNewCommunity) NewCommunityDialog(
+        contacts = contacts,
+        onCreate = viewModel::createCommunity,
+        onJoin = viewModel::joinInviteOrHandle,
+        onDismiss = { showNewCommunity = false },
+    )
+    if (showCreatePoll) CreatePollDialog(
+        onCreate = viewModel::createPoll,
+        onDismiss = { showCreatePoll = false },
+    )
+    inspected?.let { profile ->
+        PeerInspectorSheet(
+            profile = profile,
+            contacts = contacts,
+            meId = account?.id,
+            onDismiss = viewModel::dismissInspector,
+            onPinDialog = { viewModel.setDialogPinned(profile.peer, it) },
+            onArchiveDialog = { viewModel.setDialogArchived(profile.peer, it) },
+            onClearChat = viewModel::clearSelectedChat,
+            onDeleteChat = viewModel::deleteSelectedChat,
+            onSetBlocked = { viewModel.setBlocked(profile.peer, it) },
+            onEditCommunity = { title, about -> viewModel.editCommunity(profile.peer, title, about) },
+            onLeaveCommunity = { viewModel.leaveCommunity(profile.peer) },
+            onRevokeInvite = { viewModel.revokeInviteLink(profile.peer) },
+            onInviteMember = { viewModel.inviteMember(profile.peer, it) },
+            onKickMember = { viewModel.kickMember(profile.peer, it) },
+            onSetAdmin = { user, admin -> viewModel.setMemberAdmin(profile.peer, user, admin) },
+            onUnpinMessage = { viewModel.pinMessage(it, false) },
+        )
+    }
     action?.let { message ->
         ModalBottomSheet(onDismissRequest = { action = null }) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -89,11 +166,21 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                 }) { Text(stringResource(R.string.copy_message)) }
                 if (!message.deleted && message.delivery == Delivery.Sent) {
                     TextButton(onClick = { viewModel.reply(message); action = null }) { Text(stringResource(R.string.reply_message)) }
-                    if (message.senderId == account?.id && message.supported) TextButton(onClick = { viewModel.edit(message); action = null }) { Text(stringResource(R.string.edit_message)) }
+                    if (message.senderId == account?.id && message.attachment == null && message.poll == null) {
+                        TextButton(onClick = { viewModel.edit(message); action = null }) { Text(stringResource(R.string.edit_message)) }
+                    }
                     TextButton(onClick = { forwarding = message; action = null }) { Text(stringResource(R.string.forward_message)) }
+                    TextButton(onClick = { viewModel.pinMessage(message, true); action = null }) { Text(stringResource(R.string.pin_message_action)) }
+                    if (message.poll != null && !message.poll.closed && message.senderId == account?.id) {
+                        TextButton(onClick = { viewModel.closePoll(message); action = null }) { Text(stringResource(R.string.close_poll)) }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         listOf("👍", "❤️", "😂", "😮", "😢").forEach { code ->
-                            TextButton(onClick = { viewModel.react(message, code, false); action = null }, modifier = Modifier.weight(1f)) { Text(code) }
+                            val alreadyMine = message.reactions.any { it.code == code && it.mine }
+                            TextButton(
+                                onClick = { viewModel.react(message, code, alreadyMine); action = null },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(code) }
                         }
                     }
                 }
@@ -119,16 +206,16 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     }
     forwarding?.let { message ->
         AlertDialog(onDismissRequest = { forwarding = null }, title = { Text(stringResource(R.string.forward_message)) },
-            text = { LazyColumn(Modifier.heightIn(max = 400.dp)) { items(allChats, key = { it.peer.key }) { chat ->
-                TextButton(onClick = { viewModel.forward(message, chat.peer); forwarding = null }, modifier = Modifier.fillMaxWidth()) { Text(chat.title) }
-            } } }, confirmButton = { TextButton(onClick = { forwarding = null }) { Text(stringResource(R.string.cancel)) } })
-    }
-    reacting?.let { (message, code) ->
-        AlertDialog(onDismissRequest = { reacting = null }, title = { Text(code) }, text = { Text(stringResource(R.string.reaction_detail)) },
-            confirmButton = { TextButton(onClick = { viewModel.react(message, code, false); reacting = null }) { Text(stringResource(R.string.add_reaction)) } },
-            dismissButton = { TextButton(onClick = { viewModel.react(message, code, true); reacting = null }) { Text(stringResource(R.string.remove_reaction)) } })
+            text = {
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(allChats, key = { it.peer.key }) { chat ->
+                        TextButton(onClick = { viewModel.forward(message, chat.peer); forwarding = null }, modifier = Modifier.fillMaxWidth()) { Text(chat.title) }
+                    }
+                }
+            }, confirmButton = { TextButton(onClick = { forwarding = null }) { Text(stringResource(R.string.cancel)) } })
     }
     if (search.open) SearchDialog(search, selected != null, viewModel::searchServer, viewModel::closeSearch, viewModel::openSearchHit)
+
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.safeDrawingPadding().imePadding()) {
             if (error) Notice(stringResource(R.string.action_failed), Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
@@ -136,27 +223,163 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
             BoxWithConstraints(Modifier.weight(1f)) {
                 val expanded = maxWidth >= 840.dp
                 Row(Modifier.fillMaxSize()) {
-                    if (expanded || selected == null) ConversationList(
-                        chats, query, connection, selected?.key, moreDialogs,
-                        onQuery = viewModel::search, onOpen = viewModel::open,
-                        onRefresh = { viewModel.refresh() }, onMore = { viewModel.moreConversations() },
-                        onSearch = viewModel::openSearch, onLogout = { confirmLogout = true },
-                        modifier = if (expanded) Modifier.width(360.dp) else Modifier.weight(1f))
-                    if (expanded) VerticalDivider()
-                    val peer = selected
-                    if (peer != null) key(account?.id, peer.key) {
-                        ChatPane(
-                            title = allChats.firstOrNull { it.peer.key == peer.key }?.title ?: peer.id.toString(),
-                            peer = peer, queuing = queuing, messages = messages, me = account?.id,
-                            composer = composer, typing = typing.isNotEmpty(), more = moreHistory, loading = loading,
-                            onBack = viewModel::back, onSend = viewModel::send, onRetry = viewModel::retry,
-                            onOlder = { viewModel.loadOlder() }, onRead = viewModel::read,
-                            onActions = { action = it }, onReaction = { m, code -> reacting = m to code },
-                            onCancelComposer = viewModel::cancelComposer, onDraftChanged = viewModel::draftChanged,
-                            onSearch = viewModel::openSearch, modifier = Modifier.weight(1f))
-                    } else if (expanded) {
-                        Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                            Text(stringResource(R.string.select_chat), style = MaterialTheme.typography.headlineMedium)
+                    if (expanded) {
+                        NavigationRail {
+                            SectionItems().forEach { (item, label) ->
+                                NavigationRailItem(
+                                    selected = section == item,
+                                    onClick = { viewModel.selectSection(item) },
+                                    icon = { Text(label.take(1)) },
+                                    label = { Text(label) },
+                                )
+                            }
+                        }
+                    }
+                    when (section) {
+                        AppSection.Chats -> {
+                            if (expanded || selected == null) ConversationList(
+                                chats = chats,
+                                query = query,
+                                connection = connection,
+                                selectedKey = selected?.key,
+                                more = moreDialogs,
+                                onQuery = viewModel::search,
+                                onOpen = viewModel::open,
+                                onRefresh = { viewModel.refresh() },
+                                onMore = { viewModel.moreConversations() },
+                                onSearch = viewModel::openSearch,
+                                onNewCommunity = {
+                                    viewModel.refreshContacts()
+                                    showNewCommunity = true
+                                },
+                                onLogout = { confirmLogout = true },
+                                modifier = if (expanded) Modifier.width(360.dp) else Modifier.weight(1f),
+                            )
+                            if (expanded) VerticalDivider()
+                            val peer = selected
+                            if (peer != null) key(account?.id, peer.key) {
+                                ChatPane(
+                                    title = allChats.firstOrNull { it.peer.key == peer.key }?.title ?: peer.id.toString(),
+                                    peer = peer,
+                                    peerOnline = peer.kind == 1 && peer.id in onlineUsers,
+                                    queuing = queuing,
+                                    messages = messages,
+                                    me = account?.id,
+                                    composer = composer,
+                                    typing = typing.isNotEmpty(),
+                                    more = moreHistory,
+                                    loading = loading,
+                                    downloaded = downloaded,
+                                    playingPath = playingPath,
+                                    recordingVoice = recordingVoice,
+                                    onBack = viewModel::back,
+                                    onInspect = viewModel::inspectSelectedPeer,
+                                    onSend = viewModel::send,
+                                    onSendAttachment = { payload, caption -> viewModel.sendAttachment(payload, caption) },
+                                    onOpenPollDialog = { showCreatePoll = true },
+                                    onStartVoice = {
+                                        if (voiceRecorder.start()) recordingVoice = true
+                                    },
+                                    onFinishVoice = { send ->
+                                        recordingVoice = false
+                                        if (send) voiceRecorder.finish()?.let { viewModel.sendAttachment(it) }
+                                        else voiceRecorder.stopAndDiscard()
+                                    },
+                                    onDownloadOrOpen = { attachment ->
+                                        val existing = downloaded[attachment.fileId]
+                                        if (existing != null) {
+                                            if (attachment.kind == AttachmentKind.Voice || attachment.kind == AttachmentKind.Audio) {
+                                                audioPlayer.toggle(existing)
+                                            } else {
+                                                openCachedMediaExternally(context, existing, attachment.mimeType)
+                                            }
+                                        } else {
+                                            viewModel.downloadAttachment(attachment) { path ->
+                                                if (attachment.kind == AttachmentKind.Voice || attachment.kind == AttachmentKind.Audio) {
+                                                    audioPlayer.toggle(path)
+                                                } else if (attachment.kind != AttachmentKind.Photo) {
+                                                    openCachedMediaExternally(context, path, attachment.mimeType)
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onVotePoll = viewModel::votePoll,
+                                    onBotButton = { button ->
+                                        when (button.kind) {
+                                            BotButtonKind.OpenUrl -> {
+                                                if (button.value.startsWith("https://")) {
+                                                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(button.value))) }
+                                                }
+                                            }
+                                            BotButtonKind.CopyText -> {
+                                                scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("bot", button.value))) }
+                                            }
+                                            else -> viewModel.pressBotButton(button)
+                                        }
+                                    },
+                                    onRetry = viewModel::retry,
+                                    onOlder = { viewModel.loadOlder() },
+                                    onRead = viewModel::read,
+                                    onActions = { action = it },
+                                    onReaction = { m, code, mine -> viewModel.react(m, code, mine) },
+                                    onCancelComposer = viewModel::cancelComposer,
+                                    onDraftChanged = viewModel::draftChanged,
+                                    onSearch = viewModel::openSearch,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            } else if (expanded) {
+                                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                                    Text(stringResource(R.string.select_chat), style = MaterialTheme.typography.headlineMedium)
+                                }
+                            }
+                        }
+                        AppSection.Contacts -> ContactsPane(
+                            contacts = contacts,
+                            directoryResults = directoryResults,
+                            onSearchDirectory = viewModel::searchDirectory,
+                            onOpenPeer = viewModel::open,
+                            onAddContact = viewModel::addContact,
+                            onRemoveContact = viewModel::removeContact,
+                            onRefresh = { viewModel.refreshContacts() },
+                            onNewCommunity = { showNewCommunity = true },
+                            modifier = Modifier.weight(1f),
+                        )
+                        AppSection.Stories -> StoriesPane(
+                            stories = stories,
+                            myAccountId = account?.id,
+                            onRefresh = { viewModel.refreshStories() },
+                            onPostTextStory = viewModel::postTextStory,
+                            onReactStory = viewModel::reactStory,
+                            onDeleteStory = viewModel::deleteStory,
+                            modifier = Modifier.weight(1f),
+                        )
+                        AppSection.Settings -> SettingsPane(
+                            account = account,
+                            profile = ownProfile,
+                            sessions = sessions,
+                            onRefresh = { viewModel.refreshSettings() },
+                            onSaveProfile = viewModel::saveOwnProfile,
+                            onUploadAvatar = viewModel::uploadOwnAvatar,
+                            onTerminateSession = viewModel::terminateSession,
+                            onTerminateOtherSessions = { viewModel.terminateOtherSessions() },
+                            onLogout = { confirmLogout = true },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+            if (selected == null) {
+                BoxWithConstraints {
+                    if (maxWidth < 840.dp) {
+                        NavigationBar {
+                            SectionItems().forEach { (item, label) ->
+                                NavigationBarItem(
+                                    selected = section == item,
+                                    onClick = { viewModel.selectSection(item) },
+                                    icon = { Text(label.take(1)) },
+                                    label = { Text(label) },
+                                )
+                            }
                         }
                     }
                 }
@@ -166,10 +389,18 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
 }
 
 @Composable
+private fun SectionItems(): List<Pair<AppSection, String>> = listOf(
+    AppSection.Chats to stringResource(R.string.chats),
+    AppSection.Contacts to stringResource(R.string.nav_contacts),
+    AppSection.Stories to stringResource(R.string.nav_stories),
+    AppSection.Settings to stringResource(R.string.nav_settings),
+)
+
+@Composable
 private fun ConversationList(
     chats: List<Conversation>, query: String, connection: Connection, selectedKey: String?, more: Boolean,
     onQuery: (String) -> Unit, onOpen: (Peer) -> Unit, onRefresh: () -> Unit, onMore: () -> Unit,
-    onSearch: () -> Unit, onLogout: () -> Unit, modifier: Modifier,
+    onSearch: () -> Unit, onNewCommunity: () -> Unit, onLogout: () -> Unit, modifier: Modifier,
 ) {
     Column(modifier.fillMaxHeight()) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -181,9 +412,10 @@ private fun ConversationList(
                 Connection.Disconnected -> R.string.offline
                 Connection.Unauthorized -> R.string.session_expired
             }), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-            Row {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = onRefresh) { Text(stringResource(R.string.refresh)) }
                 TextButton(onClick = onSearch) { Text(stringResource(R.string.search_messages)) }
+                TextButton(onClick = onNewCommunity) { Text(stringResource(R.string.new_community)) }
             }
             TextButton(onClick = onLogout) { Text(stringResource(R.string.logout)) }
             OutlinedTextField(query, onQuery, modifier = Modifier.fillMaxWidth(), singleLine = true,
@@ -214,26 +446,63 @@ private fun ConversationList(
 
 @Composable
 private fun ChatPane(
-    title: String, peer: Peer, queuing: Boolean, messages: LazyPagingItems<ChatMessage>, me: Int?, composer: ComposerState,
-    typing: Boolean, more: Boolean, loading: Boolean, onBack: () -> Unit,
-    onSend: (String, () -> Unit) -> Unit, onRetry: (ChatMessage) -> Unit, onOlder: () -> Unit, onRead: (Long) -> Unit,
-    onActions: (ChatMessage) -> Unit, onReaction: (ChatMessage, String) -> Unit, onCancelComposer: () -> Unit,
+    title: String, peer: Peer, peerOnline: Boolean, queuing: Boolean, messages: LazyPagingItems<ChatMessage>, me: Int?,
+    composer: ComposerState, typing: Boolean, more: Boolean, loading: Boolean,
+    downloaded: Map<Long, String>, playingPath: String?, recordingVoice: Boolean,
+    onBack: () -> Unit, onInspect: () -> Unit,
+    onSend: (String, () -> Unit) -> Unit,
+    onSendAttachment: (UploadPayload, String) -> Unit,
+    onOpenPollDialog: () -> Unit,
+    onStartVoice: () -> Unit,
+    onFinishVoice: (Boolean) -> Unit,
+    onDownloadOrOpen: (Attachment) -> Unit,
+    onVotePoll: (ChatMessage, Int) -> Unit,
+    onBotButton: (BotButton) -> Unit,
+    onRetry: (ChatMessage) -> Unit, onOlder: () -> Unit, onRead: (Long) -> Unit,
+    onActions: (ChatMessage) -> Unit, onReaction: (ChatMessage, String, Boolean) -> Unit, onCancelComposer: () -> Unit,
     onDraftChanged: (String) -> Unit, onSearch: () -> Unit, modifier: Modifier,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var draft by rememberSaveable(peer.key) { mutableStateOf("") }
     var editingDraft by remember(composer.edit?.rid) { mutableStateOf(composer.edit?.text.orEmpty()) }
     val listState = rememberLazyListState()
     var followNewest by remember { mutableStateOf(true) }
     val newestRid = messages.itemSnapshotList.items.firstOrNull { it.peerKey == peer.key }?.rid
-    LaunchedEffect(listState, messages) {
+
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            runCatching { readPickedUri(context, uri, forcePhotoOrVideo = true) }.getOrNull()?.let { payload ->
+                followNewest = true
+                val caption = draft
+                draft = ""
+                onSendAttachment(payload, caption)
+            }
+        }
+    }
+    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            runCatching { readPickedUri(context, uri) }.getOrNull()?.let { payload ->
+                followNewest = true
+                val caption = draft
+                draft = ""
+                onSendAttachment(payload, caption)
+            }
+        }
+    }
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) onStartVoice()
+    }
+
+    LaunchedEffect(listState) {
         snapshotFlow {
-            Triple(listState.isScrollInProgress, listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0,
-                messages.loadState.prepend.endOfPaginationReached)
-        }.collect { (scrolling, atStart, noNewerPages) -> if (scrolling) followNewest = atStart && noNewerPages }
+            listState.isScrollInProgress to (listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0)
+        }.collect { (scrolling, atNewest) -> if (scrolling) followNewest = atNewest }
     }
     LaunchedEffect(newestRid) {
-        if (newestRid != null && followNewest && !listState.isScrollInProgress && messages.loadState.prepend.endOfPaginationReached)
+        if (newestRid != null && followNewest && !listState.isScrollInProgress) {
             listState.scrollToItem(0)
+        }
     }
     val visibleIncoming by remember(messages, listState, me, peer.key) { derivedStateOf {
         listState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
@@ -247,13 +516,18 @@ private fun ChatPane(
             awaitCancellation()
         }
     }
+
     Column(modifier.fillMaxHeight()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text(stringResource(R.string.back)) }
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f).clickable(onClick = onInspect)) {
                 Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (typing) Text(stringResource(R.string.typing), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                when {
+                    typing -> Text(stringResource(R.string.typing), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    peerOnline -> Text(stringResource(R.string.online_status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
             }
+            TextButton(onClick = onInspect) { Text(stringResource(R.string.chat_info)) }
             TextButton(onClick = onSearch) { Text(stringResource(R.string.search_messages)) }
         }
         HorizontalDivider()
@@ -262,7 +536,19 @@ private fun ChatPane(
         } else LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, reverseLayout = true, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(count = messages.itemCount, key = messages.itemKey { "${it.peerKey}:${it.rid}" }) { index ->
                 messages[index]?.takeIf { it.peerKey == peer.key }?.let { message ->
-                    MessageBubble(message, message.senderId == me, peer.kind == 2, onActions, onRetry, onReaction)
+                    MessageBubble(
+                        message = message,
+                        outgoing = message.senderId == me,
+                        group = peer.kind == 2,
+                        downloadedPath = message.attachment?.let { downloaded[it.fileId] },
+                        playingPath = playingPath,
+                        onActions = onActions,
+                        onRetry = onRetry,
+                        onReaction = onReaction,
+                        onDownloadOrOpen = onDownloadOrOpen,
+                        onVotePoll = onVotePoll,
+                        onBotButton = onBotButton,
+                    )
                 }
             }
             if (messages.loadState.append is LoadState.Loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
@@ -281,8 +567,30 @@ private fun ChatPane(
                 }
             }
         }
+        if (composer.edit == null) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (recordingVoice) {
+                    Text(stringResource(R.string.recording_voice), Modifier.weight(1f), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
+                    TextButton(onClick = { onFinishVoice(false) }) { Text(stringResource(R.string.cancel)) }
+                    Button(onClick = { followNewest = true; onFinishVoice(true) }) { Text(stringResource(R.string.send_voice)) }
+                } else {
+                    TextButton(onClick = {
+                        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                    }) { Text(stringResource(R.string.attach_media)) }
+                    TextButton(onClick = { documentPicker.launch(arrayOf("*/*")) }) { Text(stringResource(R.string.attach_file)) }
+                    TextButton(onClick = onOpenPollDialog) { Text(stringResource(R.string.poll_short)) }
+                    TextButton(onClick = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            onStartVoice()
+                        } else {
+                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }) { Text(stringResource(R.string.record_voice)) }
+                }
+            }
+        }
         val input = if (composer.edit != null) editingDraft else draft
-        Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
             OutlinedTextField(input, {
                 if (it.length <= 4096) {
                     if (composer.edit != null) editingDraft = it else draft = it
@@ -292,6 +600,7 @@ private fun ChatPane(
                 shape = RoundedCornerShape(28.dp), placeholder = { Text(stringResource(R.string.message_hint)) })
             Button(onClick = {
                 val submitted = input
+                if (composer.edit == null) followNewest = true
                 onSend(submitted) { if (composer.edit == null && draft == submitted) draft = "" }
             }, enabled = input.isNotBlank() && !queuing, modifier = Modifier.heightIn(min = 56.dp)) {
                 Text(stringResource(if (composer.edit != null) R.string.save_message else R.string.send))
@@ -303,9 +612,26 @@ private fun ChatPane(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MessageBubble(
-    message: ChatMessage, outgoing: Boolean, group: Boolean, onActions: (ChatMessage) -> Unit,
-    onRetry: (ChatMessage) -> Unit, onReaction: (ChatMessage, String) -> Unit,
+    message: ChatMessage,
+    outgoing: Boolean,
+    group: Boolean,
+    downloadedPath: String?,
+    playingPath: String?,
+    onActions: (ChatMessage) -> Unit,
+    onRetry: (ChatMessage) -> Unit,
+    onReaction: (ChatMessage, String, Boolean) -> Unit,
+    onDownloadOrOpen: (Attachment) -> Unit,
+    onVotePoll: (ChatMessage, Int) -> Unit,
+    onBotButton: (BotButton) -> Unit,
 ) {
+    if (message.serviceNotice) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                Text(message.text, Modifier.padding(horizontal = 14.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        return
+    }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start) {
         Surface(shape = RoundedCornerShape(24.dp), color = if (outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
             modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth(0.88f)
@@ -317,15 +643,74 @@ private fun MessageBubble(
                         Text(quote.text.ifBlank { stringResource(R.string.unsupported_message) }, Modifier.padding(10.dp), maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
-                Text(when {
-                    message.deleted -> stringResource(R.string.deleted_message)
-                    message.supported -> message.text
-                    else -> stringResource(R.string.unsupported_message)
-                }, style = MaterialTheme.typography.bodyLarge)
+                message.attachment?.let { att ->
+                    val imagePreview = remember(att.fileId, downloadedPath) {
+                        downloadedPath?.let { decodeSampledFileBitmap(it) } ?: decodeSampledBitmap(att.thumbnail, 480)
+                    }
+                    if (imagePreview != null) {
+                        Image(
+                            bitmap = imagePreview,
+                            contentDescription = att.name,
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp).clip(RoundedCornerShape(16.dp)),
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
+                    if (att.fileId != 0L) {
+                        val isAudio = att.kind == AttachmentKind.Voice || att.kind == AttachmentKind.Audio
+                        val isPlaying = downloadedPath != null && playingPath == downloadedPath
+                        OutlinedButton(onClick = { onDownloadOrOpen(att) }) {
+                            val label = when {
+                                isPlaying -> stringResource(R.string.stop_audio)
+                                isAudio && downloadedPath != null -> stringResource(R.string.play_audio)
+                                downloadedPath != null -> stringResource(R.string.open_attachment)
+                                else -> "${stringResource(R.string.download_attachment)} (${att.name})"
+                            }
+                            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+                message.poll?.let { poll ->
+                    Text(poll.question, style = MaterialTheme.typography.titleMedium)
+                    poll.options.forEach { option ->
+                        OutlinedButton(
+                            onClick = { onVotePoll(message, option.id) },
+                            enabled = !poll.closed,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                (if (option.chosen) "✓ " else "") + "${option.text} (${option.votes})",
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    Text(stringResource(R.string.poll_votes_summary, poll.totalVoters), style = MaterialTheme.typography.labelSmall)
+                }
+                if (message.poll == null) {
+                    Text(when {
+                        message.deleted -> stringResource(R.string.deleted_message)
+                        message.supported -> message.text
+                        else -> stringResource(R.string.unsupported_message)
+                    }, style = MaterialTheme.typography.bodyLarge)
+                }
+                if (message.buttons.isNotEmpty() && !message.deleted) {
+                    message.buttons.forEach { row ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            row.forEach { btn ->
+                                FilledTonalButton(onClick = { onBotButton(btn) }, modifier = Modifier.weight(1f)) {
+                                    Text(btn.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                    }
+                }
                 Text(formatTime(message.date) + if (message.edited) " · " + stringResource(R.string.edited_message) else "", style = MaterialTheme.typography.labelSmall)
                 if (message.reactions.isNotEmpty() && !message.deleted) FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     message.reactions.take(5).forEach { reaction ->
-                        SuggestionChip(onClick = { onReaction(message, reaction.code) }, label = { Text("${reaction.code} ${reaction.count}") })
+                        FilterChip(
+                            selected = reaction.mine,
+                            onClick = { onReaction(message, reaction.code, reaction.mine) },
+                            label = { Text("${reaction.code} ${reaction.count}") },
+                        )
                     }
                 }
                 if (outgoing && !message.deleted) {
@@ -373,5 +758,6 @@ private fun SearchDialog(state: SearchState, hasChat: Boolean, onSearch: (String
         }
     }, confirmButton = { TextButton(onClick = onClose) { Text(stringResource(R.string.close_panel)) } })
 }
+
 private fun formatTime(date: Long): String = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
     .withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(date))

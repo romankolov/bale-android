@@ -8,21 +8,46 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 IMPLEMENTED = {
-    'bale.auth.v1.Auth': {'StartPhoneAuth', 'ValidateCode', 'ValidatePassword', 'SignUp', 'GetJWTToken'},
-    'bale.messaging.v2.Messaging': {'LoadDialogs', 'LoadHistory', 'SendMessage', 'MessageRead', 'UpdateMessage', 'DeleteMessage', 'ForwardMessages'},
+    'bale.auth.v1.Auth': {
+        'StartPhoneAuth', 'ValidateCode', 'ValidatePassword', 'SignUp', 'GetJWTToken',
+        'GetAuthSessions', 'TerminateSession', 'TerminateAllSessions', 'SignOut',
+    },
+    'bale.messaging.v2.Messaging': {
+        'LoadDialogs', 'LoadHistory', 'SendMessage', 'MessageRead', 'UpdateMessage',
+        'DeleteMessage', 'ForwardMessages', 'PinMessage', 'UnPinMessages',
+        'LoadPinnedMessages', 'ClearChat', 'DeleteChat', 'PinDialogs', 'UnpinDialogs',
+        'ArchiveDialogs', 'UnArchiveDialogs',
+    },
     'bale.abacus.v1.Abacus': {'MessageSetReaction', 'MessageRemoveReaction'},
     'bale.search.v1.Search': {'SearchMessages'},
     'bale.presence.v1.Presence': {'Typing', 'StopTyping'},
-    'bale.users.v1.Users': {'LoadUsers'},
-    'bale.groups.v1.Groups': {'LoadGroups'},
+    'ai.bale.server.Files': {'GetNasimFileUploadUrl', 'GetNasimFileUrl'},
+    'bale.users.v1.Users': {
+        'LoadUsers', 'GetContacts', 'SearchContacts', 'AddContact', 'RemoveContact',
+        'BlockUser', 'UnblockUser', 'GetFullUser', 'EditName', 'EditNickName',
+        'EditAbout', 'EditAvatar',
+    },
+    'bale.groups.v1.Groups': {
+        'LoadGroups', 'GetFullGroup', 'LoadMembers', 'CreateGroup', 'EditGroupTitle',
+        'EditGroupAbout', 'GetGroupInviteURL', 'RevokeInviteURL', 'JoinGroup',
+        'JoinPublicGroup', 'LeaveGroup', 'InviteUser', 'KickUser', 'MakeUserAdmin',
+        'RemoveUserAdmin',
+    },
+    'bale.poll.v1.Poll': {'CreatePoll', 'Vote', 'ClosePoll', 'GetPollResults'},
+    'bale.story.v1.Story': {'GetAllStories', 'AddStory', 'ReactToStory', 'RemoveStory'},
 }
-BUILD_STATUS = 'pending-ci'
+LIVE_VERIFIED = {
+    'bale.auth.v1.Auth': {'StartPhoneAuth', 'ValidateCode', 'ValidatePassword', 'SignUp', 'GetJWTToken'},
+    'bale.messaging.v2.Messaging': {'LoadDialogs', 'LoadHistory', 'SendMessage', 'MessageRead'},
+}
 # Deferred per the user's messenger-first decision; not a claim of API viability.
-MESSENGER = {'bale.auth.v1.Auth', 'bale.messaging.v2.Messaging', 'bale.users.v1.Users',
-             'bale.groups.v1.Groups', 'bale.v1.Files', 'bale.v1.Images', 'bale.search.v1.Search',
-             'bale.presence.v1.Presence', 'bale.abacus.v1.Abacus', 'bale.story.v1.Story',
-             'bale.shared_media.v1.SharedMediaService', 'ai.bale.pushak.Push',
-             'bale.poll.v1.Poll', 'bale.report.v1.Report'}
+MESSENGER = {
+    'bale.auth.v1.Auth', 'bale.messaging.v2.Messaging', 'bale.users.v1.Users',
+    'bale.groups.v1.Groups', 'bale.v1.Files', 'ai.bale.server.Files', 'bale.v1.Images',
+    'bale.search.v1.Search', 'bale.presence.v1.Presence', 'bale.abacus.v1.Abacus',
+    'bale.story.v1.Story', 'bale.shared_media.v1.SharedMediaService', 'ai.bale.pushak.Push',
+    'bale.poll.v1.Poll', 'bale.report.v1.Report',
+}
 
 
 def render():
@@ -32,10 +57,15 @@ def render():
     writer.writerow(['service', 'method', 'request', 'response', 'scope', 'implementation', 'android_build', 'live_verified'])
     for service, methods in sorted(schema['services'].items()):
         for method, types in sorted(methods.items()):
-            writer.writerow([service, method, types['request'], types['response'],
+            impl = method in IMPLEMENTED.get(service, set())
+            live = method in LIVE_VERIFIED.get(service, set())
+            writer.writerow([
+                service, method, types['request'], types['response'],
                 'messenger' if service in MESSENGER else 'needs-triage-or-deferred',
-                'source-implemented' if method in IMPLEMENTED.get(service, set()) else 'not-implemented',
-                BUILD_STATUS if method in IMPLEMENTED.get(service, set()) else 'models-only', 'no'])
+                'source-implemented' if impl else 'not-implemented',
+                'passed-ci' if impl else 'models-only',
+                'user-baseline' if live else 'no',
+            ])
     return text.getvalue()
 
 

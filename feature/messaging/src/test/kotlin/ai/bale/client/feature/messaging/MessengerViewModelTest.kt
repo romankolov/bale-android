@@ -20,13 +20,16 @@ class MessengerViewModelTest {
     private val message = ChatMessage(peer.key, 99, 7, "question", 1000, Delivery.Sent)
     @Before fun setup() { Dispatchers.setMain(dispatcher) }
     @After fun teardown() { store.clear(); Dispatchers.resetMain() }
+
     private class FakeAuth : AuthRepository {
         override val account = MutableStateFlow<Account?>(Account(7, "fixture"))
         override suspend fun restore() = Unit
         override suspend fun start(phone: String): AuthChallenge = error("unused")
         override suspend fun verify(challenge: AuthChallenge, value: String): AuthChallenge? = error("unused")
         override suspend fun signOut() { account.value = null }
+        override suspend fun sessions() = listOf(AuthSessionInfo(9, "Android", "Pixel", "Tehran", 100, 200))
     }
+
     private class FakeMessenger : MessengerRepository {
         override val connection = MutableStateFlow(Connection.Connected)
         val events = mutableListOf<String>()
@@ -60,7 +63,15 @@ class MessengerViewModelTest {
             return SearchPage(emptyList(), 123)
         }
         override suspend fun setTyping(peer: Peer, active: Boolean) { typingCalls += active }
+        override suspend fun votePoll(peer: Peer, message: ChatMessage, optionIds: List<Int>, retract: Boolean) {
+            events += "vote:${optionIds.joinToString(",")}:$retract"
+        }
+        override suspend fun contacts() = listOf(ContactEntry(Peer(55, 1, 777), "Sara", "sara"))
+        override suspend fun loadStories() = listOf(StoryItem("st1", 55, "Sara", "Hello world", 5000L))
+        override suspend fun createCommunity(title: String, isChannel: Boolean, handle: String, members: List<Peer>) =
+            Peer(888, 2, 999)
     }
+
     private fun model(repo: FakeMessenger, auth: FakeAuth = FakeAuth(), state: SavedStateHandle = SavedStateHandle()): MessengerViewModel =
         MessengerViewModel(repo, auth, state).also { store.put("fixture", it) }
 
@@ -78,6 +89,7 @@ class MessengerViewModelTest {
         assertEquals(listOf("queue", "retry:111"), repo.events)
         assertNull(model.composer.value.reply)
     }
+
     @Test fun `enqueue failure retains draft callback and reply context`() = runTest(dispatcher) {
         val model = model(FakeMessenger().apply { failQueue = true })
         model.open(peer); runCurrent(); model.reply(message)
@@ -88,6 +100,7 @@ class MessengerViewModelTest {
         assertTrue(model.error.value)
         assertFalse(model.queuing.value)
     }
+
     @Test fun `edit replaces existing message without creating another outbox entry`() = runTest(dispatcher) {
         val repo = FakeMessenger()
         val model = model(repo)
@@ -96,6 +109,7 @@ class MessengerViewModelTest {
         assertEquals(listOf("edit:replacement"), repo.events)
         assertNull(model.composer.value.edit)
     }
+
     @Test fun `logout clears saved peer query composer and search state`() = runTest(dispatcher) {
         val auth = FakeAuth()
         val state = SavedStateHandle()
@@ -108,6 +122,7 @@ class MessengerViewModelTest {
         assertEquals(ComposerState(), model.composer.value)
         assertFalse(model.searchState.value.open)
     }
+
     @Test fun `new search cancels stale response and scopes to selected peer`() = runTest(dispatcher) {
         val repo = FakeMessenger()
         val model = model(repo)
@@ -118,6 +133,7 @@ class MessengerViewModelTest {
         assertEquals(peer, repo.searchPeer)
         assertFalse(model.searchState.value.busy)
     }
+
     @Test fun `typing is throttled and automatically stopped`() = runTest(dispatcher) {
         val repo = FakeMessenger()
         val model = model(repo)
@@ -127,6 +143,7 @@ class MessengerViewModelTest {
         advanceTimeBy(4_001); runCurrent()
         assertEquals(listOf(true, false), repo.typingCalls)
     }
+
     @Test fun `read acknowledgements coalesce and never move backwards`() = runTest(dispatcher) {
         val repo = FakeMessenger()
         val model = model(repo)
@@ -136,5 +153,25 @@ class MessengerViewModelTest {
         assertEquals(listOf("read:200"), repo.events)
         model.read(180); advanceTimeBy(301); runCurrent()
         assertEquals(listOf("read:200"), repo.events)
+    }
+
+    @Test fun `sections poll voting and community creation update state cleanly`() = runTest(dispatcher) {
+        val repo = FakeMessenger()
+        val model = model(repo)
+        model.selectSection(AppSection.Contacts); runCurrent()
+        assertEquals("Sara", model.contacts.value.single().name)
+        model.selectSection(AppSection.Stories); runCurrent()
+        assertEquals("Hello world", model.stories.value.single().text)
+        model.selectSection(AppSection.Settings); runCurrent()
+        assertEquals(9, model.sessions.value.single().id)
+
+        model.createCommunity("Android Team", isChannel = false, handle = "", members = emptyList())
+        runCurrent()
+        assertEquals("2:888", model.selected.value?.key)
+
+        val pollMessage = message.copy(poll = PollView(10, "Ready?", listOf(PollOptionView(0, "Yes", 1, true), PollOptionView(1, "No", 0, false)), true, false, false, 1))
+        model.votePoll(pollMessage, 0); runCurrent()
+        model.votePoll(pollMessage, 1); runCurrent()
+        assertEquals(listOf("vote::true", "vote:1:false"), repo.events)
     }
 }

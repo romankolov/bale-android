@@ -115,6 +115,19 @@ class ProtocolTest(unittest.TestCase):
         unpacked = b''.join(scalar(1, date) for date in dates)
         self.assertEqual(dates, list(bale.Dates2.FromString(unpacked).dates))
 
+    def test_reactions_polls_and_thumbnails_preserve_wire_shapes(self):
+        vote = bale.Poll_Vote_Request(pollId=55, optionIds=[1, 3])
+        self.assertEqual([1, 3], list(bale.Poll_Vote_Request.FromString(vote.SerializeToString()).optionIds))
+        resp = bale.Msg_4825_fafe26abbf__79002_p(reactions=[
+            bale.Field264(users=[7, 42], code='👍'),
+            bale.Field264(users=[9], code='❤️'),
+        ])
+        parsed = bale.Msg_4825_fafe26abbf__79002_p.FromString(resp.SerializeToString())
+        self.assertEqual(['👍', '❤️'], [r.code for r in parsed.reactions])
+        self.assertEqual([7, 42], list(parsed.reactions[0].users))
+        doc = bale.DocumentMessage(fileId=99, thumb=bale.Thumb(w=32, h=32, thumb=b'jpeg'))
+        self.assertEqual(b'jpeg', bale.DocumentMessage.FromString(doc.SerializeToString()).thumb.thumb)
+
     def test_unknown_fields_survive_roundtrip(self):
         raw = blob(55555, b'future')
         self.assertEqual(raw, bale.Message2.FromString(raw).SerializeToString())

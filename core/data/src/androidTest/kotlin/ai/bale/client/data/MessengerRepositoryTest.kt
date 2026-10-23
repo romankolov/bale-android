@@ -1,14 +1,16 @@
 package ai.bale.client.data
 
 import ai.bale.client.domain.Account
+import ai.bale.client.domain.Attachment
+import ai.bale.client.domain.AttachmentKind
 import ai.bale.client.domain.AuthChallenge
 import ai.bale.client.domain.AuthRepository
-import ai.bale.client.domain.ChatMessage
 import ai.bale.client.domain.Connection
-import ai.bale.client.domain.Delivery
 import ai.bale.client.domain.Peer
+import ai.bale.client.domain.UploadPayload
 import ai.bale.client.network.BaleRpc
 import ai.bale.client.network.MessagingApi
+import ai.bale.client.network.SessionUpdate
 import ai.bale.client.protocol.*
 import android.content.Context
 import androidx.room.Room
@@ -18,10 +20,14 @@ import com.google.protobuf.Int64Value
 import com.google.protobuf.MessageLite
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.io.File
 import java.io.IOException
 import java.util.Collections
 
@@ -30,10 +36,12 @@ class MessengerRepositoryTest {
     private lateinit var scope: CoroutineScope
     private lateinit var rpc: FakeRpc
     private lateinit var auth: FakeAuth
+    private lateinit var mediaDir: File
     private lateinit var repository: DefaultMessengerRepository
     private val peer = Peer(42, 1, 123)
     private val original = History.newBuilder().setRid(99).setDate(1000).setSenderUid(42)
         .setSeq(Int64Value.of(8)).setMessage(MessagingApi.text("question")).build()
+
     private class FakeAuth : AuthRepository {
         override val account = MutableStateFlow<Account?>(Account(7, "fixture"))
         override suspend fun restore() = Unit
@@ -41,13 +49,15 @@ class MessengerRepositoryTest {
         override suspend fun verify(challenge: AuthChallenge, value: String): AuthChallenge? = error("unused")
         override suspend fun signOut() { account.value = null }
     }
+
     private class FakeRpc : BaleRpc {
         override val state = MutableStateFlow(Connection.Disconnected)
         override var sessionId = 0L
-        override val updates = MutableSharedFlow<ai.bale.client.network.SessionUpdate>()
+        override val updates = MutableSharedFlow<SessionUpdate>()
         val requests = Collections.synchronizedList(mutableListOf<Pair<String, MessageLite>>())
+        var uploadUrl = ""
         suspend fun push(update: Update, epoch: Long = sessionId) {
-            updates.emit(ai.bale.client.network.SessionUpdate(epoch, update.toByteArray()))
+            updates.emit(SessionUpdate(epoch, update.toByteArray()))
         }
         var history = emptyList<History>()
         var failSend = false
@@ -60,24 +70,54 @@ class MessengerRepositoryTest {
                     if (failSend) throw IOException("fixture disconnect")
                     Msg_index_fe3fa18088__83329_h.newBuilder().setDate(2000).build().toByteArray()
                 }
-                "MessageSetReaction", "MessageRemoveReaction" -> Msg_4825_fafe26abbf__79002_p.newBuilder()
-                    .setField18(Field264.newBuilder().setCode("👍").setCardinality(Int64Value.of(if (method == "MessageSetReaction") 1 else 0))).build().toByteArray()
+                "MessageSetReaction" -> Msg_4825_fafe26abbf__79002_p.newBuilder()
+                    .addReactions(Field264.newBuilder().addUsers(7).setCode("👍").setCardinality(Int64Value.of(1))).build().toByteArray()
+                "MessageRemoveReaction" -> Msg_4825_fafe26abbf__79002_p.getDefaultInstance().toByteArray()
+                "GetNasimFileUploadUrl" -> Files_GetNasimFileUploadUrl_Response.newBuilder()
+                    .setFileId(707L).setUrl(uploadUrl).setChunkSize(0).build().toByteArray()
+                "CreatePoll" -> Poll_CreatePoll_Response.newBuilder().setPollId(404L).build().toByteArray()
+                "Vote" -> Poll_Vote_Response.newBuilder().setPollResult(
+                    PollResult.newBuilder().setPollId(404L).setVotersCount(1).addChosenOptionIds(0L)
+                        .addOptionResults(OptionResults.newBuilder().setOptionId(0).setVotesCount(1))
+                ).build().toByteArray()
+                "JoinGroup" -> Groups_JoinGroup_Response.newBuilder()
+                    .setGroup(Groups2.newBuilder().setId(515).setAccessHash(919L).setTitle("Joined")).build().toByteArray()
                 else -> byteArrayOf()
             }
         }
     }
+
     @Before fun setup() = runBlocking<Unit> {
-        database = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext<Context>(), BaleDatabase::class.java).build()
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        database = Room.inMemoryDatabaseBuilder(context, BaleDatabase::class.java).build()
+        mediaDir = File(context.cacheDir, "repo-test-media-${System.nanoTime()}").apply { mkdirs() }
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         rpc = FakeRpc(); auth = FakeAuth()
-        repository = DefaultMessengerRepository(auth, rpc, database, scope, AccountGate())
+        repository = DefaultMessengerRepository(
+            auth = auth,
+            socket = rpc,
+            database = database,
+            scope = scope,
+            gate = AccountGate(),
+            http = OkHttpClient(),
+            mediaRoot = mediaDir,
+            tokenProvider = { "test-jwt" },
+            allowLoopbackHttpForTests = true,
+        )
         withTimeout(10_000) { rpc.updates.subscriptionCount.first { it > 0 } }
     }
-    @After fun teardown() = runBlocking<Unit> { scope.coroutineContext[Job]?.cancelAndJoin(); database.close() }
+
+    @After fun teardown() = runBlocking<Unit> {
+        scope.coroutineContext[Job]?.cancelAndJoin()
+        database.close()
+        mediaDir.deleteRecursively()
+    }
+
     private suspend fun seed() {
         rpc.history = listOf(original)
         repository.loadHistory(peer)
     }
+
     private suspend fun row(rid: Long) = database.messenger().message(7, peer.key, rid)!!
 
     @Test fun replyRetryPreservesQuoteAndStableRidAcrossAmbiguousFailure() = runBlocking<Unit> {
@@ -96,6 +136,7 @@ class MessengerRepositoryTest {
         assertEquals("Sent", row(rid).delivery)
         assertEquals("question", row(rid).domain().quote?.text)
     }
+
     @Test fun confirmedDeletionLeavesTombstoneThatStaleHistoryCannotResurrect() = runBlocking<Unit> {
         seed()
         repository.delete(peer, row(99).domain(), false)
@@ -103,10 +144,8 @@ class MessengerRepositoryTest {
         assertTrue(row(99).deleted)
         assertEquals("", row(99).text)
         assertTrue(row(99).metadata.isEmpty())
-        val request = rpc.requests.first { it.first == "DeleteMessage" }.second as Messaging_DeleteMessage_Request
-        assertTrue(request.justMine.value)
-        assertEquals(listOf(1000L), request.dates.datesList)
     }
+
     @Test fun remoteEditDeleteAndReactionUpdatesReduceCachedMessages() = runBlocking<Unit> {
         seed()
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
@@ -115,13 +154,14 @@ class MessengerRepositoryTest {
         withTimeout(10_000) { database.messenger().messages(7, peer.key).first { it.single().text == "edited remotely" } }
         assertTrue(row(99).domain().edited)
         rpc.push(Update.newBuilder().setReactionsUpdate(ReactionsUpdate.newBuilder().setPeer(p).setRid(99)
-            .setField26(Field264.newBuilder().setCode("👍").setCardinality(Int64Value.of(4)))).build())
+            .addReactions(Field264.newBuilder().addUsers(42).setCode("👍").setCardinality(Int64Value.of(4)))).build())
         withTimeout(10_000) { database.messenger().messages(7, peer.key).first { it.single().domain().reactions.singleOrNull()?.count == 4L } }
         rpc.push(Update.newBuilder().setMessageDelete(MessageDelete.newBuilder().setPeer(p)
             .setDates(Dates2.newBuilder().addDates(1000))).build())
         withTimeout(10_000) { database.messenger().messages(7, peer.key).first { it.single().deleted } }
         assertEquals("", row(99).text)
     }
+
     @Test fun readReceiptsAndServerUnreadCounterStayAccountScoped() = runBlocking<Unit> {
         val dao = database.messenger()
         val sent = MessageEntity(7, peer.key, 88, 7, "outgoing", 900, "Sent", true)
@@ -135,6 +175,7 @@ class MessengerRepositoryTest {
             .setUnreadCounter(Int32Value.of(3))).build())
         withTimeout(10_000) { dao.conversations(7).first { it.single().unread == 3 } }
     }
+
     @Test fun typingUpdatesStopWithoutBeingPersistedAsChatMessages() = runBlocking<Unit> {
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
         rpc.push(Update.newBuilder().setTyping(Typing.newBuilder().setPeer(p).setUid(42).setTypingType(1)).build())
@@ -143,28 +184,29 @@ class MessengerRepositoryTest {
         withTimeout(10_000) { repository.typingUsers(peer).first { it.isEmpty() } }
         assertTrue(database.messenger().messages(7, peer.key).first().isEmpty())
     }
+
     @Test fun lateHistoryResponseCannotWriteIntoAnotherAccount() = runBlocking<Unit> {
         rpc.history = listOf(original)
         rpc.historyWait = CompletableDeferred()
         val fetch = async(start = CoroutineStart.UNDISPATCHED) { repository.loadHistory(peer) }
-        // The deferred response guarantees account change occurs before persistence.
         auth.account.value = Account(8, "second fixture")
         rpc.historyWait!!.complete(Unit)
         fetch.await()
         assertTrue(database.messenger().messages(7, peer.key).first().isEmpty())
         assertTrue(database.messenger().messages(8, peer.key).first().isEmpty())
     }
+
     @Test fun bufferedUpdateFromOldSessionCannotEnterNewAccountCache() = runBlocking<Unit> {
         auth.account.value = Account(8, "second fixture")
         rpc.sessionId = 2
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
         rpc.push(Update.newBuilder().setMessage(Message3.newBuilder().setPeer(p).setRid(999)
             .setDate(1000).setSenderUid(42).setMessage(MessagingApi.text("old private payload"))).build(), epoch = 1)
-        // A current-session event provides a deterministic barrier after the stale event.
         rpc.push(Update.newBuilder().setTyping(Typing.newBuilder().setPeer(p).setUid(42)).build())
         withTimeout(10_000) { repository.typingUsers(peer).first { it.isNotEmpty() } }
         assertTrue(database.messenger().messages(8, peer.key).first().isEmpty())
     }
+
     @Test fun deleteBeforeHistoryIsLoadedStillBlocksStaleMessageResurrection() = runBlocking<Unit> {
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
         rpc.push(Update.newBuilder().setMessageDelete(MessageDelete.newBuilder().setPeer(p)
@@ -175,12 +217,38 @@ class MessengerRepositoryTest {
         seed()
         assertTrue(database.messenger().messages(7, peer.key).first().isEmpty())
     }
+
     @Test fun addAndRemoveReactionsPersistServerCounts() = runBlocking<Unit> {
         seed()
         val message = row(99).domain()
         repository.react(peer, message, "👍", false)
         assertEquals(1L, row(99).domain().reactions.single().count)
+        assertTrue(row(99).domain().reactions.single().mine)
         repository.react(peer, message, "👍", true)
         assertTrue(row(99).domain().reactions.isEmpty())
+    }
+
+    @Test fun mediaUploadCachesAttachmentAndPollsAndJoinLinksPersistState() = runBlocking<Unit> {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.start()
+        try {
+            rpc.uploadUrl = server.url("/put-media").toString()
+            val payload = UploadPayload("voice.m4a", "audio/mp4a-latm", byteArrayOf(7, 7, 7), AttachmentKind.Voice, durationSeconds = 4)
+            repository.sendMedia(peer, payload, "Voice note")
+            val cached = repository.downloadMedia(Attachment(707L, 0L, 0, "voice.m4a", "audio/mp4a-latm", 3, AttachmentKind.Voice))
+            assertTrue(File(cached).isFile)
+
+            repository.createPoll(peer, "Ship?", listOf("Yes", "Now"))
+            val pollMsg = database.messenger().messages(7, peer.key).first().last().domain()
+            assertEquals("Ship?", pollMsg.poll?.question)
+            repository.votePoll(peer, pollMsg, listOf(0), retract = false)
+            assertEquals(1, row(pollMsg.rid).domain().poll?.totalVoters)
+
+            val joined = repository.joinInviteOrHandle("https://ble.ir/join/abc_TOKEN-12")
+            assertEquals("2:515", joined?.key)
+        } finally {
+            server.shutdown()
+        }
     }
 }

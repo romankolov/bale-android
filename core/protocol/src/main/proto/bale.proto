@@ -3477,7 +3477,7 @@ message DocumentMessage {
   int32 fileSize = 3;
   string name = 4;
   string mimeType = 5;
-  bytes thumb = 6;
+  Thumb thumb = 6;
   Extra2 ext = 7;
   TextMessage caption = 8;
   google.protobuf.StringValue checkSum = 9;
@@ -3952,7 +3952,7 @@ message Field263 {
 }
 
 message Field264 {
-  repeated bytes users = 1;
+  repeated int32 users = 1;
   string code = 2;
   google.protobuf.Int64Value cardinality = 3;
   bytes field_34 = 4;
@@ -5021,7 +5021,7 @@ message Groups_AddDiscussionGroupAdmin_Request {
 message Groups_CreateGroup_Request {
   int64 rid = 1;
   string title = 2;
-  UserPeers field_26 = 3;
+  repeated UserPeers users = 3;
   int32 groupType = 6;
   repeated bytes optimizations = 7;
   google.protobuf.StringValue nick = 8;
@@ -5198,7 +5198,7 @@ message Groups_InviteUser_Request {
 message Groups_InviteUsers_Request {
   GroupPeer groupPeer = 1;
   int64 rid = 2;
-  UserPeers field_26 = 3;
+  repeated UserPeers users = 3;
 }
 
 message Groups_InviteUsers_Response {
@@ -7187,7 +7187,7 @@ message MessageQuotedChanged {
 message MessageReactions {
   Peer peer = 1;
   int64 rid = 2;
-  Field264 field_26 = 3;
+  repeated Field264 reactions = 3;
   int64 date = 4;
 }
 
@@ -7612,7 +7612,7 @@ message Messaging_UnArchiveDialogs_Request {
 
 message Messaging_UnPinMessages_Request {
   ExPeer peer = 1;
-  MessageId field_18 = 2;
+  repeated MessageId messages = 2;
   bool all = 3;
 }
 
@@ -7699,7 +7699,7 @@ message Msg_4825_fafe26abbf__13926_z {
 
 message Msg_4825_fafe26abbf__79002_p {
   int32 seq = 1;
-  Field264 field_18 = 2;
+  repeated Field264 reactions = 2;
   bytes state = 3;
 }
 
@@ -8769,7 +8769,7 @@ message Poll_Vote_Request {
   int64 pollId = 1;
   bool isRetract = 2;
   int64 voteAt = 3;
-  repeated bytes optionIds = 4;
+  repeated int64 optionIds = 4;
 }
 
 message Poll_Vote_Response {
@@ -9112,7 +9112,7 @@ message RawUpdate {
 message ReactionsUpdate {
   Peer peer = 1;
   int64 rid = 2;
-  Field264 field_26 = 3;
+  repeated Field264 reactions = 3;
   bool reactionByMe = 4;
 }
 

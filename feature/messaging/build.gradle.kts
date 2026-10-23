@@ -13,6 +13,7 @@ dependencies {
     implementation(libs.compose.preview)
     debugImplementation(libs.compose.tooling)
     implementation(project(":core:domain"))
+    implementation(libs.core.ktx)
     implementation(project(":core:designsystem"))
     implementation(libs.lifecycle.runtime)
     implementation(libs.activity.compose)

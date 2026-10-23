@@ -7,6 +7,7 @@ import com.google.protobuf.BoolValue
 import com.google.protobuf.ByteString
 import android.util.Base64
 import org.json.JSONObject
+import java.io.File
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.withLock
@@ -18,12 +19,17 @@ internal class DefaultAuthRepository(
     private val database: BaleDatabase,
     scope: CoroutineScope,
     gate: AccountGate,
+    private val mediaDir: File? = null,
+    private val notifier: MessageNotifier? = null,
 ) : AuthRepository {
     private val mutableAccount = MutableStateFlow<Account?>(null)
     override val account = mutableAccount.asStateFlow()
     private val lock = gate.mutex
     @Volatile private var session: SavedSession? = null
     private var lastRefresh = System.currentTimeMillis()
+
+    fun currentToken(): String? = session?.token
+
     init {
         scope.launch {
             socket.state.collect { if (it == Connection.Unauthorized) signOut() }
@@ -44,17 +50,23 @@ internal class DefaultAuthRepository(
             }
         }
     }
+
     override suspend fun restore() = lock.withLock {
         database.messenger().recoverInterruptedOutbox()
         val saved = vault.load()
         if (saved == null) {
-            withContext(Dispatchers.IO) { database.clearAllTables() }
+            notifier?.clear()
+            withContext(Dispatchers.IO) {
+                database.clearAllTables()
+                mediaDir?.deleteRecursively()
+            }
         } else {
             session = saved
             mutableAccount.value = saved.account
             socket.start(saved.token)
         }
     }
+
     override suspend fun start(phone: String): AuthChallenge = lock.withLock {
         val request = Auth_StartPhoneAuth_Request.newBuilder()
             .setPhoneNumber(normalizePhone(phone).toLong()).setAppId(4).setApiKey(BaleEndpoint.APP_KEY)
@@ -65,6 +77,7 @@ internal class DefaultAuthRepository(
         if (response.activationType !in 0..1) throw ProtocolException("Unsupported activation method")
         AuthChallenge(response.transactionHash, if (response.activationType == 1) AuthStep.Password else AuthStep.Code)
     }
+
     override suspend fun verify(challenge: AuthChallenge, value: String): AuthChallenge? = lock.withLock {
         require(value.isNotBlank())
         val (method, request) = when (challenge.step) {
@@ -94,6 +107,7 @@ internal class DefaultAuthRepository(
         socket.start(saved.token)
         null
     }
+
     private suspend fun refreshToken() = lock.withLock {
         val current = session ?: return@withLock
         val result = Auth_GetJWTToken_Response.parseFrom(socket.rpc("bale.auth.v1.Auth", "GetJWTToken", Auth_GetJWTToken_Request.getDefaultInstance()))
@@ -103,12 +117,53 @@ internal class DefaultAuthRepository(
         session = updated
         socket.start(updated.token)
     }
+
+    override suspend fun sessions(): List<AuthSessionInfo> {
+        val api = lock.withLock {
+            if (session == null) return emptyList()
+            DirectoryApi(socket, socket.sessionId)
+        }
+        return api.authSessions().map {
+            AuthSessionInfo(
+                id = it.id,
+                appTitle = it.appTitle.ifBlank { "Bale" },
+                deviceTitle = it.deviceTitle.ifBlank { "Unknown device" },
+                location = it.authLocation,
+                authTimeSeconds = it.authTime.toLong(),
+                lastActiveAt = it.lastActivityAt.value,
+            )
+        }
+    }
+
+    override suspend fun terminateSession(id: Int) {
+        val api = lock.withLock {
+            if (session == null) return
+            DirectoryApi(socket, socket.sessionId)
+        }
+        api.terminateSession(id)
+    }
+
+    override suspend fun terminateOtherSessions() {
+        val api = lock.withLock {
+            if (session == null) return
+            DirectoryApi(socket, socket.sessionId)
+        }
+        api.terminateAllSessions()
+    }
+
     override suspend fun signOut() = lock.withLock {
-        // Local logout must work offline. Remote session revocation is tracked separately.
+        // Attempt bounded remote revocation when connected; never block offline logout.
+        if (session != null && socket.state.value == Connection.Connected) {
+            runCatching { withTimeoutOrNull(2_000) { DirectoryApi(socket, socket.sessionId).remoteSignOut() } }
+        }
         mutableAccount.value = null
         session = null
+        notifier?.clear()
         socket.stop()
         vault.clear()
-        withContext(Dispatchers.IO) { database.clearAllTables() }
+        withContext(Dispatchers.IO) {
+            database.clearAllTables()
+            mediaDir?.deleteRecursively()
+        }
     }
 }

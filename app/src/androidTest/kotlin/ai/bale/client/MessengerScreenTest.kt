@@ -4,16 +4,16 @@ import ai.bale.client.designsystem.BaleTheme
 import ai.bale.client.domain.*
 import ai.bale.client.feature.messaging.MessengerScreen
 import ai.bale.client.feature.messaging.MessengerViewModel
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
 import androidx.paging.PagingData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
-import androidx.compose.ui.semantics.SemanticsProperties
-import androidx.compose.ui.text.AnnotatedString
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -26,6 +26,7 @@ class MessengerScreenTest {
     @After fun teardown() { compose.runOnIdle { store.clear() } }
     private val peer = Peer(42, 1, 123)
     private val message = ChatMessage(peer.key, 99, 42, "question from fixture", 1761177600000, Delivery.Sent)
+
     private class FakeAuth : AuthRepository {
         override val account = MutableStateFlow<Account?>(Account(7, "fixture"))
         override suspend fun restore() = Unit
@@ -33,11 +34,13 @@ class MessengerScreenTest {
         override suspend fun verify(challenge: AuthChallenge, value: String): AuthChallenge? = error("unused")
         override suspend fun signOut() { account.value = null }
     }
+
     private class FakeMessenger(private val peer: Peer, private val message: ChatMessage) : MessengerRepository {
         override val connection = MutableStateFlow(Connection.Connected)
         private val items = MutableStateFlow(listOf(message))
         var queuedReply: ChatMessage? = null
         var queuedText: String? = null
+        var votedOptions: List<Int>? = null
         override fun conversations() = flowOf(listOf(Conversation(peer, "Test conversation", message.text, message.date, 0)))
         override fun messages(peer: Peer) = flowOf(listOf(message))
         override fun pagedMessages(peer: Peer) = items.map { PagingData.from(it) }
@@ -59,14 +62,23 @@ class MessengerScreenTest {
         override suspend fun react(peer: Peer, message: ChatMessage, code: String, remove: Boolean) = Unit
         override suspend fun searchMessages(query: String, peer: Peer?) = SearchPage(listOf(SearchHit(this.peer, "Test conversation", message)), 1)
         override suspend fun setTyping(peer: Peer, active: Boolean) = Unit
+        override suspend fun votePoll(peer: Peer, message: ChatMessage, optionIds: List<Int>, retract: Boolean) {
+            votedOptions = optionIds
+        }
+        override suspend fun contacts() = listOf(ContactEntry(Peer(77, 1, 555), "Mina Contact", "mina"))
     }
-    private fun show(): FakeMessenger {
-        val repository = FakeMessenger(peer, message)
+
+    private fun show(initialOpen: Boolean = true, initialMessage: ChatMessage = message): FakeMessenger {
+        val repository = FakeMessenger(peer, initialMessage)
         val model = MessengerViewModel(repository, FakeAuth(), SavedStateHandle())
-        compose.runOnUiThread { store.put("fixture", model); model.open(peer) }
+        compose.runOnUiThread {
+            store.put("fixture", model)
+            if (initialOpen) model.open(peer)
+        }
         compose.setContent { BaleTheme { MessengerScreen(model) } }
         return repository
     }
+
     @Test fun replyActionPreservesQuoteAndClearsDraftAfterEnqueue() {
         val repository = show()
         compose.onNodeWithText("question from fixture").performClick()
@@ -81,6 +93,7 @@ class MessengerScreenTest {
         compose.onNodeWithTag("message-composer").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
         compose.onNodeWithText("answer from UI").assertIsDisplayed()
     }
+
     @Test fun serverSearchShowsMatchingMessagePreview() {
         show()
         compose.onNodeWithText("Search messages").performClick()
@@ -88,5 +101,21 @@ class MessengerScreenTest {
         compose.onNodeWithTag("server-search-submit").performClick()
         compose.onNodeWithText("Showing 1 matches · server total 1").assertIsDisplayed()
         compose.onNodeWithText("Open conversation").assertIsDisplayed()
+    }
+
+    @Test fun navigationTabsAndInteractivePollsWorkInCompose() {
+        val pollMsg = ChatMessage(
+            peerKey = peer.key, rid = 200, senderId = 42, text = "Best release?", date = 1761177605000, delivery = Delivery.Sent,
+            poll = PollView(501L, "Best release?", listOf(PollOptionView(0, "Today", 2, false), PollOptionView(1, "Tomorrow", 1, false)), true, false, false, 3),
+        )
+        val repository = show(initialOpen = false, initialMessage = pollMsg)
+        compose.onNodeWithText("Contacts").performClick()
+        compose.onNodeWithText("Mina Contact").assertIsDisplayed()
+        compose.onNodeWithText("Chats").performClick()
+        compose.onNodeWithText("Test conversation").performClick()
+        compose.onNodeWithText("Today (2)").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(0), repository.votedOptions)
+        }
     }
 }
