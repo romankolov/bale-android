@@ -15,7 +15,8 @@ Stages are acceptance gates, not promises that schema generation delivers parity
   adaptive list-detail UI and baseline accessibility semantics.
 
 **Gate outstanding**
-- First successful Gradle sync, debug build and Android Lint run.
+- Gradle debug build, Android Lint and startup tests now pass in CI; complete
+  design/accessibility acceptance remains outstanding.
 - Device/RTL/font-scaling/screen-reader review; design previews/screenshots.
 - Commit Room's generated v1 schema after the actual annotation processor runs.
 
@@ -30,10 +31,10 @@ Stages are acceptance gates, not promises that schema generation delivers parity
 - WebSocket handshake, metadata, request correlation, cancellation/timeouts,
   heartbeat/pong deadlines, reconnect with jitter, unauthorized termination.
 - Token refresh scheduling while the process is connected.
-- JUnit/MockWebServer transport tests and auth ViewModel tests authored.
+- JUnit/MockWebServer transport tests and auth ViewModel tests pass in CI.
 
 **Gate outstanding**
-- Run authored Kotlin tests and real login/session-refresh/reconnect scenarios.
+- Kotlin unit tests pass; verify real login/session-refresh/reconnect scenarios.
 - Resend/rate-limit/cooldown handling, recovery flows and remote session management.
 - Verify current build metadata, endpoint reachability and registration/JWT behavior.
 - Review certificate/platform trust and retry policies with real failure traces
@@ -52,8 +53,9 @@ Stages are acceptance gates, not promises that schema generation delivers parity
   as retryable failures. No automatic replay of ambiguous RPC outcomes.
 
 **Gate outstanding**
-- Room/instrumented tests, migration baseline, full reconnect catch-up and update
-  ordering/deduplication, deletion reconciliation and missed-update recovery.
+- Basic Room/account-isolation/reconciliation tests pass on API 29 and 36.
+  Migration baseline, full reconnect catch-up, update ordering/deduplication,
+  deletion reconciliation and missed-update recovery remain outstanding.
 - Paging 3/RemoteMediator, complete dialog pagination, missing peer resolution.
 - Replies, edits/deletes/forwards, reactions, typing/presence, server search,
   delivery/read ticks, archive/pin/mute and new-chat flows.
@@ -85,13 +87,14 @@ financial transactions; those remain a separate deferred scope.
 ## 5 — Hardening and release
 
 **Started**
-- Automated protocol checks pass; JVM/MockWebServer/Compose tests authored.
-- CI configuration for generation, build, unit tests, lint and test compilation.
+- Protocol checks, JVM/MockWebServer/auth tests and Compose/Room smoke tests pass.
+- CI runs generation, debug APK build, unit tests, correctness lint and device
+  tests on API 29 and 36, with downloadable APK/reports.
 - Sensitive-data storage/logging/backup baseline and explicit coverage tracking.
 
 **Gate outstanding**
-- Green CI, Android instrumentation and Room tests; emulator/device matrix
-  covering Android 10 and current target behavior.
+- Basic CI and emulator gates are green. Expand Android instrumentation/Room
+  coverage, add migration/race tests and verify physical-device behavior.
 - Persian/English, RTL, TalkBack, 200% font scale, dark mode, tablet/foldable,
   rotation/process restoration, permissions and offline regression passes.
 - Startup/scroll performance, large-history/paging/memory/battery benchmarks,
@@ -105,7 +108,7 @@ privacy documentation and a truthful known-limitations list.
 
 ## Immediate next gate
 
-Run the Android workflow or open the project in an Android toolchain environment.
-Resolve build/test/lint findings **before** multiplying unverified feature code.
-Then complete stage 2's live acceptance gate and stage 3's message actions/paging;
-proceed into stage 4 and release hardening without treating any partial stage as done.
+The initial build/unit/lint/emulator gate is now green; see the recorded
+[verification evidence](VERIFICATION.md). Validate stage 2 against authorized real
+accounts, complete stage 3's synchronization/message actions/paging, and continue
+through media and release hardening. A successful build is not full feature parity.

@@ -1,55 +1,91 @@
 # Verification record
 
-## Executed in this workspace
+## Successful GitHub Actions run
 
-- `python tools/generate_protocol.py --check`: PASS.
-- `.venv/bin/python tools/verify_protocol.py`: **10 tests PASS**.
-  - Every recovered non-WKT message field's number/type/repetition.
-  - Every RPC request/response type reference.
-  - Handshake, direct RPC envelope, metadata and response/error layout.
-  - Empty terminate-session presence and high-number update fields.
-  - Int64 message IDs above 2^53, Persian/emoji text, unknown-field retention.
-- `.venv/bin/protoc ... --java_out=lite:...`: PASS for both canonical model
-  and transport schemas, using verification-tool protoc **30.2**.
-- `tools/generate_coverage.py --check`: PASS; 699 endpoints / 9 source paths.
-- `git diff --check`: PASS when last checked.
+[Run 39882404720](https://github.com/romankolov/bale-android/actions/runs/39882404720)
+verified source commit **`57ea67247c1bf2ce133e024171a7053ef43c286d`**.
+All four jobs passed. Documentation/coverage updates reference this concrete
+source snapshot rather than assuming that any later commit has already passed.
 
-The Python fixture checks validate schema/wire compatibility against the recovered
-reference layout; they do **not** execute the Kotlin network engine. The independent
-Java code-generation check is not a Java compilation or Android build. The Android
-build pins protoc 32.1 / protobuf-javalite 4.32.1 and still needs Gradle verification.
+| Gate | Result |
+|---|---|
+| Protocol/model checks | 10 tests pass; deterministic schema/coverage checks pass |
+| Java-lite generation | Pass in standalone verification and the Android Gradle build |
+| Debug app + instrumentation APK build | Pass |
+| Android correctness lint | Pass under the policy below |
+| Domain unit tests | 5 pass, 0 skipped |
+| Network/MockWebServer unit tests | 15 pass, 0 skipped |
+| Auth ViewModel unit tests | 3 pass, 0 skipped |
+| Android 10 / API 29 emulator | 2 app/Compose tests + 4 Room tests pass, 0 skipped |
+| Android 16 / API 36 emulator | 2 app/Compose tests + 4 Room tests pass, 0 skipped |
 
-## Attempted but blocked
+The real application launch test exercises the manifest, Hilt composition,
+initial session/cache restoration and login UI. The Compose flow uses a fake
+repository; **it does not log in to Bale**. Room tests cover account-scoped
+queries, stable-rid acknowledgement reconciliation, cross-account separation,
+interrupted-outbox recovery and clearing cached rows. They do not prove absence
+of all session/write races or validate a future migration.
 
-`./gradlew --version` fails before Gradle starts because there is no `java` or
-`JAVA_HOME`. The environment also lacks Android SDK/Gradle installations, and
-network access excludes Google repositories, Maven Central and Bale's endpoints.
-No successful Gradle build, Kotlin test run, emulator run, live login or APK exists
-from this workspace. No remote workflow was triggered and no private account was used.
+Runner/toolchain: Ubuntu 24.04, JDK 17, Gradle 8.13, AGP 8.13.0, Android SDK 36,
+Build Tools 35.0.0, protobuf compiler 32.1 / Java-lite 4.32.1. Device jobs use
+hardware-accelerated x86_64 Google APIs emulators with animations disabled and
+English locale. This does not cover physical devices or API 37.
 
-## Authored, not executed
+## Downloadable build and reports
 
-- JUnit phone normalization tests (international, Persian/Arabic digits, invalid input).
-- gRPC-web framing/parser/error/size-bound tests.
-- MockWebServer handshake/auth-header and out-of-order RPC correlation test.
-- Empty terminate-envelope presence regression test.
-- Auth ViewModel double-submit/challenge/reset/error-recovery tests.
-- Compose phone → code UI smoke test with a fake repository (English device locale).
-- Actions build/unit/lint/test-compilation workflow.
+- [Development APK ZIP](https://github.com/romankolov/bale-android/actions/runs/39882404720/artifacts/12471416312)
+- [Build/unit/lint reports](https://github.com/romankolov/bale-android/actions/runs/39882404720)
+- Device reports are separate `device-test-reports-api-29` / `...-36` artifacts.
 
-## Required next validation
+Extract and install `app-debug.apk`. Artifact access may require GitHub sign-in;
+retention limits apply. Debug signing is temporary, not production signing. A
+new runner can use a different debug key; uninstalling an incompatible old build
+also deletes its local data. Release/R8/signing validation is still outstanding.
 
-1. Run `./gradlew :app:assembleDebug` in a normal Android environment. Fix all
-   dependency/API/compiler issues before expanding feature breadth.
-2. Run domain/network/auth unit tests and Android Lint. Generate/commit Room v1
-   schema from KSP; add in-memory Room/account-boundary instrumented tests.
-3. Run the Compose test on Android 10+; then add RTL, large text, dark mode and
-   adaptive-layout tests. CI currently compiles instrumentation tests, not runs them.
-4. Use an authorized test account/device to validate server errors, registration,
-   two-step verification, refresh, 4401 handling, real messaging and ID deduplication.
-5. Test process death, missed updates, empty history, missing peer hashes, concurrent
-   sends, ambiguous timeouts, sign-out/write races and interrupted uploads when added.
-6. Complete the roadmap's media/notifications/paging coverage and release tests.
+## CI and lint policy
 
-Never put verification codes, JWTs, private message contents or signing credentials
-into test fixtures, CI logs, repository issues or chat.
+- SDK 36 is an intentional baseline, not a claim of using the newest SDK.
+- `OldTargetApi`, `GradleDependency` and `AndroidGradlePluginVersion` advisories
+  are excluded from the app lint gate. SDK/AGP/Compose upgrades require deliberate,
+  coordinated validation and are tracked through the roadmap/Dependabot.
+- All other enabled correctness lint checks remain fatal, including warnings.
+  No blanket lint baseline or broad warning suppression was added.
+- CI corrected a Kotlin coroutine return-type error and genuine launcher-resource
+  issues (obsolete qualifier and missing monochrome icon), rather than suppressing them.
+- Commands preserve failure exit codes. API-visible annotations include compiler,
+  lint and JUnit failures plus actual report-derived counts; full logs/reports
+  remain artifacts. Independent tasks continue after a failure to expose more issues.
+
+## Local verification and environment boundary
+
+This sandbox still lacks Java/Android SDK and cannot reach Maven/Google/Bale
+hosts. **GitHub Actions is the verified build/run environment**, not the sandbox.
+Locally executed checks include:
+
+- `python tools/generate_protocol.py --check`: pass.
+- `.venv/bin/python tools/verify_protocol.py`: 10 tests pass (field types,
+  RPC references, envelopes, metadata, int64 IDs, Unicode and unknown fields).
+- `.venv/bin/protoc ... --java_out=lite:...`: pass using standalone protoc 30.2.
+- `python tools/generate_coverage.py --check`: pass; 699 RPCs / 9 source paths.
+- Python tool compilation and staged whitespace checks: pass.
+
+Python fixture checks validate the recovered layout; Kotlin's network engine is
+covered separately by the passing JVM tests. Generated models do not establish
+server availability, feature completeness or authorization.
+
+## Remaining validation
+
+1. Review/commit the actual KSP-exported Room v1 schema from the report artifact,
+   then add migration tests before changing the schema.
+2. Use authorized test accounts/devices to validate real login, registration,
+   two-step verification, token refresh/expiry, 4401 handling, messaging and rid
+   deduplication. No live account, private credentials or real chats were used in CI.
+3. Add RTL, large-text, dark-mode, adaptive-layout, accessibility and physical-device
+   tests. The current English-locale smoke suite is intentionally small.
+4. Test process death, missed updates, missing peer hashes, concurrent sends,
+   ambiguous timeouts, logout/write races and interrupted uploads when implemented.
+5. Complete the roadmap's media, message actions, notifications, paging and release
+   performance/security/R8/signing gates. Calls and financial features remain deferred.
+
+Never put verification codes, JWTs, private messages or signing credentials into
+fixtures, CI logs, issues or chat.

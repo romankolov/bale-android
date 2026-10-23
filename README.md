@@ -2,11 +2,17 @@
 
 An independent, native Android Bale client under development. **Android 10+ (API 29).**
 
-> **Status: initial source implementation, not a complete or release-ready client.**
-> Protocol validation and Java-lite generation pass locally. Android compilation,
-> JVM/Compose tests, device behavior and real-account interoperability are **not yet
-> verified**: this workspace has no JDK/Android SDK, and its network excludes Maven,
-> Google Android repositories and Bale servers. No APK has been produced.
+> **Status: build-verified development client, not feature-complete or release-ready.**
+> [GitHub Actions verification passed](https://github.com/romankolov/bale-android/actions/runs/39882404720)
+> at source commit `57ea672`: debug APK, Android Lint, 23 unit tests, 10 protocol
+> checks, and six instrumentation tests on each of Android 10 and Android 16.
+> **Live Bale login/messaging and production readiness remain unverified.**
+
+[Download the development APK artifact](https://github.com/romankolov/bale-android/actions/runs/39882404720/artifacts/12471416312)
+(unzip `app-debug.apk`; GitHub sign-in may be required). Fresh-runner debug signing
+keys may differ between builds; a signature mismatch requires uninstalling the
+previous development build, which deletes its local data. Do not treat this as a
+production release. Artifacts are subject to GitHub retention limits.
 
 ## Agreed five-stage delivery
 
@@ -55,8 +61,12 @@ access is required.
 Debug APK output (after a successful build):
 `app/build/outputs/apk/debug/app-debug.apk`.
 Release signing is intentionally **not** configured; never commit signing keys.
-The Actions workflow builds/tests/lints and uploads reports plus a **development**
-APK only if compilation succeeds. It has been added, not executed remotely.
+The Actions workflow installs/uses JDK 17 and SDK 36 on pinned Ubuntu 24.04
+runners, builds/tests/lints, uploads reports and a **development** APK, and runs
+app-launch/Compose/Room tests on API 29 and 36 emulators with KVM acceleration.
+This path is verified; this local sandbox still cannot fetch the Android toolchain.
+Dependency/SDK upgrade advisories are deliberately separate from correctness lint
+(see [the verification policy](docs/VERIFICATION.md)).
 
 ## Verify the protocol without Android
 
@@ -108,7 +118,7 @@ gRPC stubs**. Only nine RPC paths currently have source implementations.
 The executable reference transport places `RequestBody` directly in WebSocket
 field 1, whereas an illustrative documentation snippet adds another wrapper.
 The app follows the reference encoder; byte-level tests lock down that choice.
-No production account/network verification has been possible here. Host and
+No production account/network verification has been performed. Host and
 protocol build metadata reflect the supplied archive, not a discovery of today's
 server requirements. Bale may restrict access by network/location.
 

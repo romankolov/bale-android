@@ -1,19 +1,20 @@
 # Capability coverage
 
-**Source implementation is not build verification, device verification, or live
-server verification.** The first column is intentionally conservative.
+Debug compilation, correctness lint, unit tests and English-locale smoke tests
+on API 29/36 now pass in CI. This is **not** live-server or full-feature verification;
+see [the evidence and remaining validation](VERIFICATION.md).
 
 | Capability | Source status | Remaining verification/work |
 |---|---|---|
-| Canonical protobuf models | Generated and validated | Android Gradle generation/build |
+| Canonical protobuf models | Gradle generation/build pass | Live protocol compatibility |
 | Login HTTP framing/errors | Implemented | Auth transport tests, live server |
 | Phone/code/2FA/registration | Implemented initial paths | Real flow, resend/cooldowns/recovery |
 | Secure session restore/refresh | Implemented | Keystore/device/token-expiry tests |
 | Local logout | Implemented | Race/device data-deletion tests |
 | Remote logout/session control | Not implemented | Server session revocation |
-| WebSocket RPC/reconnect/heartbeat | Implemented | Run MockWebServer and adverse-network tests |
+| WebSocket RPC/reconnect/heartbeat | Implemented; MockWebServer tests pass | Adverse networks, timeouts and live server |
 | Conversation list/history/text send | Implemented initial paths | Real account validation and full pagination |
-| Local cache/outbox/stable-ID retry | Implemented | Room tests, crash tests, server dedup guarantees |
+| Local cache/outbox/stable-ID retry | Implemented; basic Room tests pass on API 29/36 | Crash/race tests, migration baseline, server dedup guarantees |
 | Incoming text and send acknowledgement | Initial reducers | Full update coverage, ordering and catch-up |
 | Mark read | RPC path implemented | Visible-state lifecycle tests and server semantics |
 | Read/delivery ticks, presence/typing | Not implemented | Protocol reducers + UI |

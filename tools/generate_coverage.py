@@ -29,7 +29,7 @@ def render():
             writer.writerow([service, method, types['request'], types['response'],
                 'messenger' if service in MESSENGER else 'needs-triage-or-deferred',
                 'source-implemented' if method in IMPLEMENTED.get(service, set()) else 'not-implemented',
-                'unverified', 'no'])
+                'passed-ci' if method in IMPLEMENTED.get(service, set()) else 'models-only', 'no'])
     return text.getvalue()
 
 
