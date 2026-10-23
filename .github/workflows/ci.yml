@@ -35,16 +35,22 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       - name: Use hosted runner Android SDK
         run: echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
       - run: python3 tools/ci_exec.py ci-logs/sdk.log sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
-      - run: python3 tools/ci_exec.py ci-logs/gradle.log ./gradlew --console=plain :core:domain:test :core:network:test :feature:auth:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest
+      - run: python3 tools/ci_exec.py ci-logs/gradle.log ./gradlew --console=plain --continue :core:domain:test :core:network:test :feature:auth:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest
+      - name: Summarize executed tests
+        if: always()
+        run: python3 tools/ci_test_summary.py
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         if: always()
         with:
           name: verification-reports
           path: |
             ci-logs/
+            core/data/schemas/
             **/build/reports/
             **/build/test-results/
           if-no-files-found: ignore
@@ -59,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api: [29, 35]
+        api: [29, 36]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
@@ -67,6 +73,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       - name: Use hosted runner Android SDK
         run: echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
       - run: python3 tools/ci_exec.py ci-logs/sdk.log sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
@@ -81,13 +89,17 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: python3 tools/ci_exec.py ci-logs/device-tests.log ./gradlew --console=plain :app:connectedDebugAndroidTest :core:data:connectedDebugAndroidTest
+          script: python3 tools/ci_exec.py ci-logs/device-tests.log ./gradlew --console=plain --continue :app:connectedDebugAndroidTest :core:data:connectedDebugAndroidTest
+      - name: Summarize executed tests
+        if: always()
+        run: python3 tools/ci_test_summary.py
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         if: always()
         with:
           name: device-test-reports-api-${{ matrix.api }}
           path: |
             ci-logs/
+            core/data/schemas/
             **/build/reports/androidTests/
             **/build/outputs/androidTest-results/
           if-no-files-found: ignore
