@@ -34,6 +34,8 @@ class FilesAndDirectoryApiTest {
 
     @Test fun `single PUT upload streams full raw bytes and never invents an access hash`() = runTest {
         val server = MockWebServer()
+        // One PUT for the photo upload, one for the channel document upload below.
+        server.enqueue(MockResponse().setResponseCode(200))
         server.enqueue(MockResponse().setResponseCode(200))
         server.start()
         val http = OkHttpClient.Builder()

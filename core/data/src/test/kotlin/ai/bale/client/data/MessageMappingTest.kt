@@ -149,7 +149,15 @@ class MessageMappingTest {
                         .setStickerId(Int32Value.of(7))
                         .setStickerCollectionId(Int32Value.of(88))
                         .setStickerCollectionAccessHash(Int64Value.of(4242L))
-                        .setImage256(ByteString.copyFrom(byteArrayOf(4, 5, 6))),
+                        .setImage256(
+                            ImageLocation.newBuilder()
+                                .setFileLocation(
+                                    FileLocation.newBuilder().setFileId(1234L).setAccessHash(5678L),
+                                )
+                                .setWidth(160)
+                                .setHeight(160)
+                                .setFileSize(4096),
+                        ),
                 ),
             )
             .setReplies(RepliesInfo.newBuilder().setRepliesCount(6).addRecentRepliers(UserPeers.newBuilder().setUid(21)))
@@ -160,6 +168,9 @@ class MessageMappingTest {
         assertEquals(88, mapped.stickerCollectionId)
         assertEquals(4242L, mapped.stickerCollectionAccessHash)
         assertEquals(6, mapped.repliesCount)
+        // image256 is an ImageLocation on the wire; the receiver resolves it as a downloadable ref.
+        assertEquals(1234L, mapped.attachment?.fileId)
+        assertEquals(5678L, mapped.attachment?.accessHash)
         assertEquals(AttachmentKind.Sticker, mapped.attachment?.kind)
         assertArrayEquals(byteArrayOf(4, 5, 6), mapped.attachment?.thumbnail)
 
