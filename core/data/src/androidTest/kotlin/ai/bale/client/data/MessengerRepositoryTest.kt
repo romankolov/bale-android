@@ -57,6 +57,7 @@ class MessengerRepositoryTest {
         override val updates = MutableSharedFlow<SessionUpdate>()
         val requests = Collections.synchronizedList(mutableListOf<Pair<String, MessageLite>>())
         var uploadUrl = ""
+        private val serverClock = java.util.concurrent.atomic.AtomicLong(2000L)
         suspend fun push(update: Update, epoch: Long = sessionId) {
             updates.emit(SessionUpdate(epoch, update.toByteArray()))
         }
@@ -69,7 +70,7 @@ class MessengerRepositoryTest {
                 "LoadHistory" -> { historyWait?.await(); Messaging_LoadHistory_Response.newBuilder().addAllHistory(history).build().toByteArray() }
                 "SendMessage" -> {
                     if (failSend) throw IOException("fixture disconnect")
-                    Msg_index_fe3fa18088__83329_h.newBuilder().setDate(2000).build().toByteArray()
+                    Msg_index_fe3fa18088__83329_h.newBuilder().setDate(serverClock.incrementAndGet()).build().toByteArray()
                 }
                 "MessageSetReaction" -> Msg_4825_fafe26abbf__79002_p.newBuilder()
                     .addReactions(Field264.newBuilder().addUsers(7).setCode("👍").setCardinality(Int64Value.of(1))).build().toByteArray()
