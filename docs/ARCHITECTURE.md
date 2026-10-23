@@ -24,9 +24,9 @@ The split archive protos fail type resolution. Generate one namespace from the
 supplied deduplicated runtime schema, maintaining field numbers, primitive types
 and repeated flags. Keep original placeholder names/opaque bytes; do not infer
 missing semantics. The original ZIP and runtime JSON provide provenance.
-Generated Java-lite code is a build output, not committed source. Full Java-lite
-generation was validated independently of Android; the app's pinned compiler still
-needs to run in Gradle.
+Generated Java-lite code is a build output, not committed source. Both standalone
+generation and Android Gradle generation/compilation pass in CI; see the concrete
+source snapshot and test evidence in [VERIFICATION.md](VERIFICATION.md).
 
 Service routing is custom. The reference encoder puts RpcRequest directly in
 SocketRequest.field1. Metadata string values are nested at field 2 → field 1;
