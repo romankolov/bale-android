@@ -90,8 +90,12 @@ data class VotersState(
 /** Quick-pick delays offered in the schedule sheet, in minutes. */
 internal val SCHEDULE_PRESET_MINUTES = listOf(10L, 30L, 60L, 180L, 1_440L)
 
+/**
+ * First absolute URL in a message. Only trailing sentence punctuation is removed, so links that
+ * legitimately end in a bracket (query strings) survive untouched.
+ */
 internal fun firstUrlIn(text: String): String? =
-    Regex("""https?://[^\s]+""").find(text)?.value?.trimEnd('.', ',', ')')
+    Regex("""https?://[^\s]+""").find(text)?.value?.trimEnd('.', ',')?.trimEnd('.', ',')
 
 internal fun isRetryableFailure(message: ChatMessage): Boolean =
     message.delivery == Delivery.Failed && message.senderId != 0
