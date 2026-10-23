@@ -23,13 +23,18 @@ import javax.inject.Singleton
 internal class DataRuntime(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).writeTimeout(90, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).writeTimeout(180, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .addInterceptor { chain ->
-            val request = chain.request().newBuilder().header("Origin", BaleEndpoint.ORIGIN)
-            mapOf("app_version" to BaleEndpoint.VERSION, "browser_type" to "1",
-                "browser_version" to "138.0.0.0", "os_type" to "3").forEach { (key, value) ->
-                request.header(key, value).header("mt_$key", value)
+            val incoming = chain.request()
+            val request = incoming.newBuilder()
+                .header("Origin", BaleEndpoint.ORIGIN)
+                .header("User-Agent", BaleEndpoint.USER_AGENT)
+            if (incoming.url.host.equals(BaleEndpoint.HOST, ignoreCase = true)) {
+                mapOf("app_version" to BaleEndpoint.VERSION, "browser_type" to "1",
+                    "browser_version" to "138.0.0.0", "os_type" to "3").forEach { (key, value) ->
+                    request.header(key, value).header("mt_$key", value)
+                }
             }
             chain.proceed(request.build())
         }.build()

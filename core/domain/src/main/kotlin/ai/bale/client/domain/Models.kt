@@ -11,6 +11,15 @@ data class Peer(val id: Int, val kind: Int, val accessHash: Long) {
     val key: String get() = "$kind:$id"
 }
 
+/** Bale ExPeerType values used by Files, Poll, Pin, and SendMessage RPCs. */
+object ExPeerKind {
+    const val PRIVATE = 1
+    const val GROUP = 2
+    const val CHANNEL = 3
+    const val BOT = 4
+    const val SUPERGROUP = 5
+}
+
 data class Account(val id: Int, val name: String)
 data class Conversation(val peer: Peer, val title: String, val preview: String, val date: Long, val unread: Int, val muted: Boolean = false)
 enum class Delivery { Pending, Sent, Failed }
@@ -57,13 +66,20 @@ data class UploadPayload(
     override fun hashCode(): Int = (name.hashCode() * 31 + mimeType.hashCode()) * 31 + bytes.contentHashCode()
 }
 
-fun inferAttachmentKind(mimeType: String): AttachmentKind = when {
+fun inferAttachmentKind(mimeType: String, fileName: String = ""): AttachmentKind = when {
     mimeType.startsWith("image/") -> AttachmentKind.Photo
     mimeType.startsWith("video/") -> AttachmentKind.Video
-    mimeType.startsWith("audio/ogg") || mimeType.contains("voice") || mimeType.endsWith("mp4a-latm") -> AttachmentKind.Voice
+    mimeType.startsWith("audio/ogg") || mimeType.contains("voice") || mimeType.endsWith("mp4a-latm") ||
+        (mimeType.startsWith("audio/") && fileName.startsWith("voice_", ignoreCase = true)) -> AttachmentKind.Voice
     mimeType.startsWith("audio/") -> AttachmentKind.Audio
     else -> AttachmentKind.Document
 }
+
+data class ForwardedInfo(
+    val senderUserId: Int = 0,
+    val publicGroupId: Int = 0,
+    val authorName: String = "",
+)
 
 data class PollOptionView(val id: Int, val text: String, val votes: Int, val chosen: Boolean)
 
@@ -105,6 +121,7 @@ data class ChatMessage(
     val poll: PollView? = null,
     val buttons: List<List<BotButton>> = emptyList(),
     val serviceNotice: Boolean = false,
+    val forwardedFrom: ForwardedInfo? = null,
 ) {
     val reference: MessageReference get() = MessageReference(rid, date, sequence)
 }
@@ -214,6 +231,7 @@ interface MessengerRepository {
     suspend fun createPoll(peer: Peer, question: String, options: List<String>, anonymous: Boolean = true, multipleChoice: Boolean = false) = Unit
     suspend fun votePoll(peer: Peer, message: ChatMessage, optionIds: List<Int>, retract: Boolean = false) = Unit
     suspend fun closePoll(peer: Peer, message: ChatMessage) = Unit
+    suspend fun refreshPolls(peer: Peer) = Unit
     suspend fun pressBotButton(peer: Peer, button: BotButton) = Unit
     suspend fun contacts(): List<ContactEntry> = emptyList()
     suspend fun searchDirectory(query: String): List<ContactEntry> = emptyList()

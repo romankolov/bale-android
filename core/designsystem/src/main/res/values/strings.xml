@@ -130,4 +130,12 @@
     <string name="open_attachment">Open file</string>
     <string name="download_attachment">Download</string>
     <string name="poll_votes_summary">%1$d votes</string>
+    <string name="poll_anonymous_badge">Anonymous poll</string>
+    <string name="poll_public_badge">Public poll</string>
+    <string name="poll_closed_badge">Final results</string>
+    <string name="poll_submit_vote">Submit vote</string>
+    <string name="poll_retract_vote">Retract vote</string>
+    <string name="forwarded_header">Forwarded</string>
+    <string name="forwarded_from_author">Forwarded · %1$s</string>
+    <string name="uploading_file">Uploading %1$s…</string>
 </resources>

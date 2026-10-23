@@ -45,9 +45,9 @@ class DirectoryApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         call(USERS, "EditAbout", Users_EditAbout_Request.newBuilder().setAbout(StringValue.of(about.trim())).build())
     }
 
-    suspend fun editAvatar(fileId: Long) {
+    suspend fun editAvatar(fileId: Long, accessHash: Long = 0L) {
         call(USERS, "EditAvatar", Users_EditAvatar_Request.newBuilder()
-            .setFileLocation(FileLocation.newBuilder().setFileId(fileId)).build())
+            .setFileLocation(FileLocation.newBuilder().setFileId(fileId).setAccessHash(accessHash)).build())
     }
 
     // --- Groups & Channels ---

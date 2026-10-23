@@ -78,10 +78,40 @@ class MessengerRepositoryTest {
                 "GetNasimFileUploadUrl" -> Files_GetNasimFileUploadUrl_Response.newBuilder()
                     .setFileId(707L).setUrl(uploadUrl).setChunkSize(0).build().toByteArray()
                 "CreatePoll" -> Poll_CreatePoll_Response.newBuilder().setPollId(404L).build().toByteArray()
-                "Vote" -> Poll_Vote_Response.newBuilder().setPollResult(
-                    PollResult.newBuilder().setPollId(404L).setVotersCount(1).addChosenOptionIds(0L)
-                        .addOptionResults(OptionResults.newBuilder().setOptionId(0).setVotesCount(1))
-                ).build().toByteArray()
+                "Vote" -> {
+                    val voteReq = request as Poll_Vote_Request
+                    val chosen = voteReq.optionIdsList.map(Int::toLong)
+                    Poll_Vote_Response.newBuilder().setPollResult(
+                        PollResult.newBuilder()
+                            .setPollId(voteReq.pollId)
+                            .setVotersCount(if (voteReq.isRetract) 0 else 1)
+                            .addAllChosenOptionIds(if (voteReq.isRetract) emptyList() else chosen)
+                            .apply {
+                                if (!voteReq.isRetract) {
+                                    voteReq.optionIdsList.forEach { opt ->
+                                        addOptionResults(OptionResults.newBuilder().setOptionId(opt).setVotesCount(1))
+                                    }
+                                }
+                            }
+                    ).build().toByteArray()
+                }
+                "GetPollResults" -> {
+                    val req = request as Poll_GetPollResults_Request
+                    Poll_GetPollResults_Response.newBuilder()
+                        .addAllPollResults(req.pollIdsList.map { id ->
+                            PollResult.newBuilder().setPollId(id).setVotersCount(5).addChosenOptionIds(0L)
+                                .addOptionResults(OptionResults.newBuilder().setOptionId(0).setVotesCount(3))
+                                .addOptionResults(OptionResults.newBuilder().setOptionId(1).setVotesCount(2))
+                                .build()
+                        }).build().toByteArray()
+                }
+                "GetFullGroup" -> {
+                    val req = request as Groups_GetFullGroup_Request
+                    Groups_GetFullGroup_Response.newBuilder()
+                        .setGroup(FullGroup.newBuilder().setId(req.group.groupId).setAccessHash(req.group.accessHash)
+                            .setGroupType(if (req.group.groupId == 777) 1 else 0).setTitle("Channel 777"))
+                        .build().toByteArray()
+                }
                 "JoinGroup" -> Groups_JoinGroup_Response.newBuilder()
                     .setGroup(Groups2.newBuilder().setId(515).setAccessHash(919L).setTitle("Joined")).build().toByteArray()
                 else -> byteArrayOf()
@@ -248,5 +278,64 @@ class MessengerRepositoryTest {
 
         val joined = repository.joinInviteOrHandle("https://ble.ir/join/abc_TOKEN-12")
         assertEquals("2:515", joined?.key)
+    }
+
+    @Test fun channelUploadForwardedSocketUpdatesAndPollVoteSwitchingWorkEndToEnd() = runBlocking<Unit> {
+        // 1. Channel file upload resolves ExPeerKind.CHANNEL (3) and channel owner accessHash
+        rpc.uploadUrl = "https://files.bale.ai/upload/707"
+        val channelPeer = Peer(777, 2, 999L)
+        repository.sendMedia(
+            channelPeer,
+            UploadPayload("slides.pdf", "application/pdf", byteArrayOf(1, 2, 3, 4), AttachmentKind.Document),
+            "Deck",
+        )
+        val uploadReq = rpc.requests.last { it.first == "GetNasimFileUploadUrl" }.second as Files_GetNasimFileUploadUrl_Request
+        assertEquals(777, uploadReq.uploaderUid.value)
+        assertEquals(3, uploadReq.exPeer.type)
+        val sentDocReq = rpc.requests.last { it.first == "SendMessage" }.second as Messaging_SendMessage_Request
+        assertEquals(3, sentDocReq.peer.type)
+        assertEquals(777L, sentDocReq.message.documentMessage.accessHash)
+
+        // 2. Live socket forwarded message unwraps emptyMessage into real supported ChatMessage
+        val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
+        rpc.push(Update.newBuilder().setMessage(
+            Message3.newBuilder()
+                .setPeer(p).setRid(600L).setDate(3000L).setSenderUid(42)
+                .setMessage(Message2.newBuilder().setEmptyMessage(EmptyMessage.getDefaultInstance()))
+                .setQuotedMessage(QuotedMessage.newBuilder().setSenderUserId(99).setQuotedMessageContent(MessagingApi.text("Forwarded live message")))
+        ).build())
+        val fwdMsg = withTimeout(10_000) {
+            database.messenger().messages(7, peer.key).first { rows -> rows.any { it.rid == 600L } }
+                .first { it.rid == 600L }.domain()
+        }
+        assertTrue(fwdMsg.supported)
+        assertEquals("Forwarded live message", fwdMsg.text)
+        assertEquals(99, fwdMsg.forwardedFrom?.senderUserId)
+        assertNull(fwdMsg.quote)
+
+        // 3. LoadHistory automatically hydrates poll counts via GetPollResults AND switching vote auto-retracts first
+        rpc.history = listOf(
+            History.newBuilder().setRid(700L).setDate(4000L).setSenderUid(42)
+                .setMessage(Message2.newBuilder().setPollMessage(
+                    PollMessage.newBuilder().setPollId(909L).setQuestion("Release day?")
+                        .addOptions(Options.newBuilder().setId(0).setText("Mon"))
+                        .addOptions(Options.newBuilder().setId(1).setText("Tue"))
+                )).build()
+        )
+        repository.loadHistory(peer)
+        val hydratedPoll = row(700L).domain()
+        assertEquals(5, hydratedPoll.poll?.totalVoters)
+        assertEquals(3, hydratedPoll.poll?.options?.get(0)?.votes)
+        assertEquals(2, hydratedPoll.poll?.options?.get(1)?.votes)
+        assertTrue(hydratedPoll.poll?.options?.get(0)?.chosen == true)
+
+        rpc.requests.clear()
+        repository.votePoll(peer, hydratedPoll, listOf(1), retract = false)
+        val voteCalls = rpc.requests.filter { it.first == "Vote" }.map { it.second as Poll_Vote_Request }
+        assertEquals(2, voteCalls.size)
+        assertTrue(voteCalls[0].isRetract)
+        assertFalse(voteCalls[1].isRetract)
+        assertEquals(listOf(1), voteCalls[1].optionIdsList)
+        assertTrue(row(700L).domain().poll?.options?.get(1)?.chosen == true)
     }
 }

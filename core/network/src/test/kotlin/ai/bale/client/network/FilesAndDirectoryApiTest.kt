@@ -3,6 +3,7 @@ package ai.bale.client.network
 import ai.bale.client.domain.Attachment
 import ai.bale.client.domain.AttachmentKind
 import ai.bale.client.domain.Connection
+import ai.bale.client.domain.ExPeerKind
 import ai.bale.client.domain.Peer
 import ai.bale.client.domain.ProtocolException
 import ai.bale.client.domain.UploadPayload
@@ -31,11 +32,21 @@ class FilesAndDirectoryApiTest {
         }
     }
 
-    @Test fun `chunked file upload sends multipart PUTs with chunk headers and trailing confirmation`() = runTest {
+    @Test fun `single PUT upload streams full raw bytes without chunk headers and populates document metadata`() = runTest {
         val server = MockWebServer()
-        repeat(3) { server.enqueue(MockResponse().setResponseCode(200)) }
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(MockResponse().setResponseCode(200))
         server.start()
-        val http = OkHttpClient()
+        val http = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val b = req.newBuilder()
+                if (req.url.host.equals(BaleEndpoint.HOST, ignoreCase = true)) {
+                    b.header("app_version", "176652")
+                }
+                chain.proceed(b.build())
+            }
+            .build()
         try {
             val rpc = StubRpc()
             rpc.responder = { _, method, _ ->
@@ -47,18 +58,51 @@ class FilesAndDirectoryApiTest {
                     .build().toByteArray()
             }
             val api = FilesApi(rpc, http, allowLoopbackHttpForTests = true)
-            val payload = UploadPayload("photo.jpg", "image/jpeg", byteArrayOf(1, 2, 3, 4, 5, 6), AttachmentKind.Photo, width = 100, height = 80)
+            val rawBytes = byteArrayOf(1, 2, 3, 4, 5, 6)
+            val payload = UploadPayload("photo.jpg", "image/jpeg", rawBytes, AttachmentKind.Photo, width = 100, height = 80)
             val uploaded = api.upload(7, payload, Peer(42, 1, 123), "fixture-jwt")
             assertEquals(901L, uploaded.fileId)
-            val r0 = server.takeRequest(); val r1 = server.takeRequest(); val r2 = server.takeRequest()
-            assertEquals("0", r0.getHeader("chunk")); assertEquals("2", r0.getHeader("no")); assertEquals(4L, r0.bodySize)
-            assertEquals("1", r1.getHeader("chunk")); assertEquals("2", r1.getHeader("no")); assertEquals(2L, r1.bodySize)
-            assertEquals("2", r2.getHeader("chunk")); assertEquals("2", r2.getHeader("no")); assertEquals(0L, r2.bodySize)
-            assertEquals("access_token=fixture-jwt", r0.getHeader("Cookie"))
-            val doc = FilesApi.documentMessage(uploaded, payload, "Holiday")
+            assertEquals(7L, uploaded.ownerAccessHash)
+            val firstUploadReq = rpc.calls.single().third as Files_GetNasimFileUploadUrl_Request
+            assertEquals(7, firstUploadReq.uploaderUid.value)
+            assertEquals(1, firstUploadReq.exPeer.type)
+
+            val putReq = server.takeRequest()
+            assertEquals("PUT", putReq.method)
+            assertEquals(6L, putReq.bodySize)
+            assertArrayEquals(rawBytes, putReq.body.readByteArray())
+            assertNull(putReq.getHeader("chunk"))
+            assertNull(putReq.getHeader("no"))
+            assertNull(putReq.getHeader("app_version"))
+            assertEquals("https://web.bale.ai", putReq.getHeader("Origin"))
+            assertEquals("multipart/form-data", putReq.getHeader("Content-Type"))
+            assertEquals("access_token=fixture-jwt", putReq.getHeader("Cookie"))
+            assertEquals(0, server.requestCount - 1)
+
+            // Verify channel uploads use channel peer.id as uploaderUid & ownerAccessHash and append default extensions
+            val pdfPayload = UploadPayload("report", "application/pdf", byteArrayOf(9, 9, 9), AttachmentKind.Document)
+            val chanUploaded = api.upload(7, pdfPayload, Peer(777, 2, 999), "fixture-jwt", exPeerType = ExPeerKind.CHANNEL)
+            val chanUploadReq = rpc.calls.last().third as Files_GetNasimFileUploadUrl_Request
+            assertEquals(777, chanUploadReq.uploaderUid.value)
+            assertEquals(ExPeerKind.CHANNEL, chanUploadReq.exPeer.type)
+            assertEquals("report.pdf", chanUploadReq.fileInfo.name.value)
+            assertEquals(777L, chanUploaded.ownerAccessHash)
+
+            val thumb = byteArrayOf(11, 22, 33)
+            val doc = FilesApi.documentMessage(
+                uploaded = uploaded,
+                payload = payload,
+                caption = "Holiday",
+                thumbnail = thumb,
+                thumbWidth = 50,
+                thumbHeight = 40,
+            )
             assertEquals(901L, doc.documentMessage.fileId)
+            assertEquals(7L, doc.documentMessage.accessHash)
             assertEquals(100, doc.documentMessage.ext.documentExPhoto.w)
             assertEquals("Holiday", doc.documentMessage.caption.text)
+            assertEquals(50, doc.documentMessage.thumb.w)
+            assertArrayEquals(thumb, doc.documentMessage.thumb.thumb.toByteArray())
         } finally {
             server.shutdown()
             http.dispatcher.executorService.shutdown()
@@ -97,7 +141,7 @@ class FilesAndDirectoryApiTest {
         }
     }
 
-    @Test fun `directory API routes contacts groups stories and auth session operations`() = runTest {
+    @Test fun `directory API routes contacts groups avatar accessHash stories and auth session operations`() = runTest {
         val rpc = StubRpc()
         rpc.responder = { service, method, _ ->
             when ("$service/$method") {
@@ -113,6 +157,10 @@ class FilesAndDirectoryApiTest {
         val created = api.createCommunity(12L, "Engineering", isChannel = false, handle = "", members = listOf(Peer(10, 1, 20), Peer(11, 1, 21)))
         assertEquals(300, created.id)
         assertEquals(2, (rpc.calls.first().third as Groups_CreateGroup_Request).usersCount)
+        api.editAvatar(901L, 7L)
+        val avatarReq = rpc.calls.last().third as Users_EditAvatar_Request
+        assertEquals(901L, avatarReq.fileLocation.fileId)
+        assertEquals(7L, avatarReq.fileLocation.accessHash)
         assertEquals("st-1", api.addTextStory("Hello story"))
         assertEquals(5, api.authSessions().single().id)
         api.terminateSession(5)

@@ -21,8 +21,18 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
             Messaging_LoadHistory_Request.newBuilder().setPeer(peer.wire()).setDate(before)
                 .setLoadMode(2).setLimit(PAGE_SIZE).build()))
 
-    suspend fun send(peer: Peer, rid: Long, content: Message2, reply: MessageReference?): Msg_index_fe3fa18088__83329_h {
-        val request = Messaging_SendMessage_Request.newBuilder().setPeer(peer.wire()).setRid(rid).setMessage(content)
+    suspend fun send(
+        peer: Peer,
+        rid: Long,
+        content: Message2,
+        reply: MessageReference?,
+        exPeerType: Int = peer.kind,
+    ): Msg_index_fe3fa18088__83329_h {
+        val request = Messaging_SendMessage_Request.newBuilder()
+            .setPeer(peer.wire())
+            .setExPeer(Peer3.newBuilder().setType(exPeerType).setId(peer.id).setAccessHash(peer.accessHash))
+            .setRid(rid)
+            .setMessage(content)
         if (reply != null) request.setQuotedMessageReference(reference(peer, reply))
         return Msg_index_fe3fa18088__83329_h.parseFrom(call(MESSAGING, "SendMessage", request.build()))
     }
@@ -38,9 +48,9 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
             .setDates(Dates.newBuilder().addDates(date)).setJustMine(BoolValue.of(!forEveryone)).build())
     }
 
-    suspend fun forward(from: Peer, to: Peer, message: MessageReference, destinationRid: Long) {
+    suspend fun forward(from: Peer, to: Peer, message: MessageReference, destinationRid: Long, toExPeerType: Int = to.kind) {
         call(MESSAGING, "ForwardMessages", Messaging_ForwardMessages_Request.newBuilder()
-            .setPeer(Peer3.newBuilder().setType(to.kind).setId(to.id).setAccessHash(to.accessHash))
+            .setPeer(Peer3.newBuilder().setType(toExPeerType).setId(to.id).setAccessHash(to.accessHash))
             .addMessageIds(destinationRid).addForwardedMessages(reference(from, message)).build())
     }
 
@@ -106,16 +116,24 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         else call(MESSAGING, "UnArchiveDialogs", Messaging_UnArchiveDialogs_Request.newBuilder().addExPeers(peer.exWire()).build())
     }
 
-    suspend fun createPoll(peer: Peer, question: String, options: List<String>, anonymous: Boolean, multiple: Boolean, now: Long): Long {
+    suspend fun createPoll(
+        peer: Peer,
+        question: String,
+        options: List<String>,
+        anonymous: Boolean,
+        multiple: Boolean,
+        now: Long = 0L,
+        exPeerType: Int = peer.kind,
+    ): Long {
         val message = pollMessage(0, question, options, anonymous, multiple)
         return Poll_CreatePoll_Response.parseFrom(call(POLL, "CreatePoll", Poll_CreatePoll_Request.newBuilder()
-            .setPollMessage(message).setCreateAt(now).setExpeer(peer.exWire()).build())).pollId
+            .setPollMessage(message).setCreateAt(now).setExpeer(peer.exWire(exPeerType)).build())).pollId
     }
 
-    suspend fun votePoll(pollId: Long, optionIds: List<Int>, retract: Boolean, now: Long): PollResult =
+    suspend fun votePoll(pollId: Long, optionIds: List<Int>, retract: Boolean, now: Long = 0L): PollResult =
         Poll_Vote_Response.parseFrom(call(POLL, "Vote", Poll_Vote_Request.newBuilder()
             .setPollId(pollId).setIsRetract(retract).setVoteAt(now)
-            .addAllOptionIds(optionIds.map(Int::toLong)).build())).pollResult
+            .addAllOptionIds(optionIds).build())).pollResult
 
     suspend fun closePoll(pollId: Long) {
         call(POLL, "ClosePoll", Poll_ClosePoll_Request.newBuilder().setPollId(pollId).build())
@@ -154,6 +172,6 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
                     if (message.sequence != 0L) setSeq(Int64Value.of(message.sequence))
                 }.build()
         fun Peer.wire(): Peer2 = Peer2.newBuilder().setType(kind).setId(id).setAccessHash(accessHash).build()
-        fun Peer.exWire(): ExPeer = ExPeer.newBuilder().setType(kind).setId(id).setAccessHash(accessHash).build()
+        fun Peer.exWire(exPeerType: Int = kind): ExPeer = ExPeer.newBuilder().setType(exPeerType).setId(id).setAccessHash(accessHash).build()
     }
 }

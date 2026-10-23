@@ -6,22 +6,45 @@ import ai.bale.client.protocol.*
 internal fun MessageEntity.history(): History = if (metadata.isEmpty()) History.getDefaultInstance() else
     try { History.parseFrom(metadata) } catch (_: com.google.protobuf.InvalidProtocolBufferException) { History.getDefaultInstance() }
 
+/**
+ * Official Bale Web (`H7` in `index.fe3fa18088.js`): every forwarded message sets
+ * `message.emptyMessage` on the outer envelope and places the forwarded `Message2`
+ * inside `quotedMessage.quotedMessageContent`.
+ */
+internal fun isForwardedHistory(history: History): Boolean =
+    history.message.hasEmptyMessage() && history.hasQuotedMessage()
+
+internal fun effectiveHistoryMessage(history: History): Message2 =
+    if (isForwardedHistory(history)) history.quotedMessage.quotedMessageContent else history.message
+
 internal fun MessageEntity.domain(): ChatMessage {
     val history = history()
-    val quote = history.quotedMessage.takeIf { history.hasQuotedMessage() }?.let {
-        QuotePreview(it.messageId.value, it.senderUserId, contentText(it.quotedMessageContent))
-    }
-    val rawMessage = history.message
+    val forwarded = isForwardedHistory(history)
+    val forwardedInfo = if (forwarded) {
+        val qm = history.quotedMessage
+        ForwardedInfo(
+            senderUserId = qm.senderUserId,
+            publicGroupId = qm.publicGroupId.value,
+            authorName = qm.authorSign.value,
+        )
+    } else null
+    val quote = if (!forwarded && history.hasQuotedMessage()) {
+        val qm = history.quotedMessage
+        QuotePreview(qm.messageId.value, qm.senderUserId, contentText(qm.quotedMessageContent))
+    } else null
+    val rawMessage = effectiveHistoryMessage(history)
     val template = if (rawMessage.hasTemplateMessage()) rawMessage.templateMessage else null
     val unwrapped = if (template != null && template.hasGeneralMessage()) template.generalMessage else rawMessage
+    val resolvedText = if (deleted) "" else text.ifBlank { contentText(rawMessage) }
+    val resolvedSupported = supported || isSupportedMessage(rawMessage)
     return ChatMessage(
         peerKey = peerKey,
         rid = rid,
         senderId = senderId,
-        text = text,
+        text = resolvedText,
         date = date,
         delivery = Delivery.valueOf(delivery),
-        supported = supported,
+        supported = resolvedSupported,
         sequence = history.seq.value,
         quote = quote,
         edited = history.hasEditedAt() && history.editedAt.value > 0,
@@ -36,6 +59,7 @@ internal fun MessageEntity.domain(): ChatMessage {
         poll = if (deleted) null else extractPoll(unwrapped),
         buttons = if (deleted || template == null) emptyList() else extractButtons(template),
         serviceNotice = !deleted && unwrapped.hasServiceMessage(),
+        forwardedFrom = if (deleted) null else forwardedInfo,
     )
 }
 
@@ -67,6 +91,50 @@ internal fun contentText(raw: Message2): String {
     }
 }
 
+internal fun History.pollMessageOrNull(): PollMessage? {
+    val unwrapped = unwrapMessage(effectiveHistoryMessage(this))
+    return if (unwrapped.hasPollMessage()) unwrapped.pollMessage else null
+}
+
+internal fun History.withPollResult(result: PollResult): History {
+    if (isForwardedHistory(this)) {
+        val forwardedContent = quotedMessage.quotedMessageContent
+        val updatedContent = forwardedContent.withInnerPollResult(result) ?: return this
+        return toBuilder()
+            .setQuotedMessage(quotedMessage.toBuilder().setQuotedMessageContent(updatedContent))
+            .build()
+    }
+    val updatedContent = message.withInnerPollResult(result) ?: return this
+    return toBuilder().setMessage(updatedContent).build()
+}
+
+private fun Message2.withInnerPollResult(result: PollResult): Message2? {
+    if (hasPollMessage()) {
+        return toBuilder().setPollMessage(pollMessage.toBuilder().setResult(result)).build()
+    }
+    if (hasTemplateMessage() && templateMessage.generalMessage.hasPollMessage()) {
+        val inner = templateMessage.generalMessage.toBuilder()
+            .setPollMessage(templateMessage.generalMessage.pollMessage.toBuilder().setResult(result))
+        return toBuilder().setTemplateMessage(templateMessage.toBuilder().setGeneralMessage(inner)).build()
+    }
+    return null
+}
+
+internal fun mergeHistoryPreservingState(old: History?, incoming: History): History {
+    if (old == null) return incoming
+    var merged = if (!incoming.hasQuotedMessage() && old.hasQuotedMessage()) {
+        incoming.toBuilder().setQuotedMessage(old.quotedMessage).build()
+    } else {
+        incoming
+    }
+    val incomingPoll = merged.pollMessageOrNull()
+    val oldPoll = old.pollMessageOrNull()
+    if (incomingPoll != null && !incomingPoll.hasResult() && oldPoll != null && oldPoll.hasResult()) {
+        merged = merged.withPollResult(oldPoll.result)
+    }
+    return merged
+}
+
 private fun extractAttachment(message: Message2): Attachment? = when {
     message.hasDocumentMessage() -> {
         val doc = message.documentMessage
@@ -76,7 +144,7 @@ private fun extractAttachment(message: Message2): Attachment? = when {
             ext.hasDocumentExVideo() || ext.hasDocumentExGif() -> AttachmentKind.Video
             ext.hasDocumentExVoice() -> AttachmentKind.Voice
             ext.hasDocumentExAudio() -> AttachmentKind.Audio
-            else -> inferAttachmentKind(doc.mimeType)
+            else -> inferAttachmentKind(doc.mimeType, doc.name)
         }
         val width = when {
             ext.hasDocumentExPhoto() -> ext.documentExPhoto.w
@@ -178,6 +246,9 @@ private fun extractButtons(template: TemplateMessage): List<List<BotButton>> {
     return rows
 }
 
-internal fun History.entity(account: Int, peerKey: String): MessageEntity = MessageEntity(
-    account, peerKey, rid, senderUid, contentText(message), date, Delivery.Sent.name, isSupportedMessage(message), toByteArray(),
-)
+internal fun History.entity(account: Int, peerKey: String): MessageEntity {
+    val effective = effectiveHistoryMessage(this)
+    return MessageEntity(
+        account, peerKey, rid, senderUid, contentText(effective), date, Delivery.Sent.name, isSupportedMessage(effective), toByteArray(),
+    )
+}

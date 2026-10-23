@@ -173,5 +173,10 @@ class MessengerViewModelTest {
         model.votePoll(pollMessage, 0); runCurrent()
         model.votePoll(pollMessage, 1); runCurrent()
         assertEquals(listOf("vote::true", "vote:1:false"), repo.events)
+
+        repo.events.clear()
+        model.submitPollSelection(pollMessage, listOf(0, 1)); runCurrent()
+        model.retractPollVote(pollMessage); runCurrent()
+        assertEquals(listOf("vote:0,1:false", "vote::true"), repo.events)
     }
 }

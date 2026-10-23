@@ -130,4 +130,12 @@
     <string name="open_attachment">باز کردن فایل</string>
     <string name="download_attachment">دریافت فایل</string>
     <string name="poll_votes_summary">%1$d رأی</string>
+    <string name="poll_anonymous_badge">نظرسنجی ناشناس</string>
+    <string name="poll_public_badge">نظرسنجی عمومی</string>
+    <string name="poll_closed_badge">نتایج نهایی</string>
+    <string name="poll_submit_vote">ثبت رأی</string>
+    <string name="poll_retract_vote">پس گرفتن رأی</string>
+    <string name="forwarded_header">بازارسال‌شده</string>
+    <string name="forwarded_from_author">بازارسال‌شده · %1$s</string>
+    <string name="uploading_file">در حال بارگذاری %1$s…</string>
 </resources>

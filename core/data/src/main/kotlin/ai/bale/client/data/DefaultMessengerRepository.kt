@@ -7,6 +7,8 @@ import ai.bale.client.network.DirectoryApi
 import ai.bale.client.network.FilesApi
 import ai.bale.client.network.MessagingApi
 import ai.bale.client.protocol.*
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
@@ -19,15 +21,17 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 internal class DefaultMessengerRepository(
     private val auth: AuthRepository,
     private val socket: BaleRpc,
     private val database: BaleDatabase,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val gate: AccountGate,
     private val http: OkHttpClient = OkHttpClient(),
     private val mediaRoot: File? = null,
@@ -42,6 +46,8 @@ internal class DefaultMessengerRepository(
     private val dirtyDialogs = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val typing = MutableStateFlow<Map<String, Map<Int, Long>>>(emptyMap())
     private val mutableOnline = MutableStateFlow<Set<Int>>(emptySet())
+    private val exPeerTypes = ConcurrentHashMap<String, Int>()
+    private val ownAccessHashes = ConcurrentHashMap<Int, Long>()
     override val onlineUsers = mutableOnline.asStateFlow()
     override val connection = socket.state
 
@@ -65,6 +71,35 @@ internal class DefaultMessengerRepository(
         )
     }
 
+    private fun recordUserMeta(accountId: Int, user: Users, hashHint: Long = 0L) {
+        if (user.id == 0) return
+        exPeerTypes["$accountId:1:${user.id}"] = if (user.isBot.value) ExPeerKind.BOT else ExPeerKind.PRIVATE
+        val resolvedHash = hashHint.takeIf { it != 0L } ?: user.accessHash
+        if (user.id == accountId && resolvedHash != 0L) ownAccessHashes[accountId] = resolvedHash
+    }
+
+    private fun recordGroupMeta(accountId: Int, id: Int, groupType: Int) {
+        if (id == 0) return
+        exPeerTypes["$accountId:2:$id"] = when (groupType) {
+            1 -> ExPeerKind.CHANNEL
+            2 -> ExPeerKind.SUPERGROUP
+            else -> ExPeerKind.GROUP
+        }
+    }
+
+    private suspend fun resolveExPeerType(session: ActiveClients, peer: Peer): Int {
+        val cacheKey = "${session.account.id}:${peer.key}"
+        exPeerTypes[cacheKey]?.let { return it }
+        if (peer.kind == 2) {
+            val full = runCatching { session.directory.fullGroup(peer) }.getOrNull()
+            if (full != null && full.id != 0) {
+                recordGroupMeta(session.account.id, full.id, full.groupType)
+                return exPeerTypes[cacheKey] ?: ExPeerKind.GROUP
+            }
+        }
+        return peer.kind
+    }
+
     init {
         scope.launch {
             connection.collectLatest { if (it == Connection.Connected) safely { refreshConversations() } }
@@ -86,6 +121,8 @@ internal class DefaultMessengerRepository(
                 if (it == null) {
                     typing.value = emptyMap()
                     mutableOnline.value = emptySet()
+                    exPeerTypes.clear()
+                    ownAccessHashes.clear()
                 }
             }
         }
@@ -130,16 +167,27 @@ internal class DefaultMessengerRepository(
             .map { GroupPeer.newBuilder().setGroupId(it.peer.id).setAccessHash(groupHashes[it.peer.id] ?: 0).build() }.distinctBy { it.groupId }
         if (missingUsers.isNotEmpty()) safely { users.putAll(api.users(missingUsers).usersList.associateBy { it.id }) }
         if (missingGroups.isNotEmpty()) safely { groups.putAll(api.groups(missingGroups).groupsList.associateBy { it.id }) }
+        users.values.forEach { recordUserMeta(account.id, it, userHashes[it.id] ?: 0L) }
+        groups.values.forEach { recordGroupMeta(account.id, it.id, it.groupType) }
         gate.mutex.withLock {
             if (auth.account.value != account) return@withLock
             val rows = response.dialogsList.filter { it.peer.type in 1..2 }.map {
                 val p = it.peer
-                val previous = dao.conversation(account.id, "${p.type}:${p.id}")
+                val key = "${p.type}:${p.id}"
+                val previous = dao.conversation(account.id, key)
                 val hash = if (p.type == 1) userHashes[p.id] ?: users[p.id]?.accessHash else groupHashes[p.id] ?: groups[p.id]?.accessHash
                 val name = if (p.type == 1) users[p.id]?.name else groups[p.id]?.title
+                val directText = contentText(it.message)
+                val preview = when {
+                    directText.isNotBlank() -> directText
+                    it.isMessageForwarded -> dao.message(account.id, key, it.rid)?.domain()?.text?.ifBlank { null }
+                        ?: previous?.preview?.takeIf(String::isNotBlank)
+                        ?: "↪"
+                    else -> ""
+                }
                 ConversationEntity(
-                    account.id, "${p.type}:${p.id}", p.id, p.type, hash ?: previous?.accessHash ?: 0,
-                    name ?: previous?.title ?: p.id.toString(), contentText(it.message),
+                    account.id, key, p.id, p.type, hash ?: previous?.accessHash ?: 0,
+                    name ?: previous?.title ?: p.id.toString(), preview,
                     it.sortDate.takeIf { date -> date != 0L } ?: it.date, it.unreadCount,
                 )
             }
@@ -154,12 +202,57 @@ internal class DefaultMessengerRepository(
         val account = session.account
         val cursor = if (before == OLDER) dao.oldestMessage(account.id, peer.key) ?: -1 else before
         val response = session.messaging.history(peer, cursor)
+        val userHashes = response.userPeersList.associate { it.uid to it.accessHash }
+        response.usersList.forEach { recordUserMeta(account.id, it, userHashes[it.id] ?: 0L) }
+        response.groupsList.forEach { recordGroupMeta(account.id, it.id, it.groupType) }
         gate.mutex.withLock {
             if (auth.account.value == account) database.withTransaction {
                 response.historyList.forEach { merge(it.entity(account.id, peer.key)) }
             }
         }
+        if (response.historyList.any { it.pollMessageOrNull()?.pollId?.let { id -> id != 0L } == true }) {
+            safely { hydratePollsForPeer(session, peer.key) }
+        }
         return if (cursor > 0 && response.historyList.none { it.date < cursor }) 0 else response.historyCount
+    }
+
+    override suspend fun refreshPolls(peer: Peer) {
+        val session = activeSession() ?: return
+        safely { hydratePollsForPeer(session, peer.key) }
+    }
+
+    private suspend fun hydratePollsForPeer(session: ActiveClients, peerKey: String) {
+        val account = session.account
+        if (auth.account.value != account) return
+        val existingRows = dao.messages(account.id, peerKey).first()
+        val pollIds = existingRows.asSequence()
+            .filter { !it.deleted }
+            .mapNotNull { it.history().pollMessageOrNull()?.pollId?.takeIf { id -> id != 0L } }
+            .distinct()
+            .toList()
+        if (pollIds.isEmpty()) return
+        val resultsById = mutableMapOf<Long, PollResult>()
+        pollIds.chunked(50).forEach { batch ->
+            val fetched = session.messaging.pollResults(batch)
+            fetched.forEachIndexed { idx, result ->
+                val resolvedId = result.pollId.takeIf { it != 0L } ?: batch.getOrNull(idx) ?: return@forEachIndexed
+                resultsById[resolvedId] = result
+            }
+        }
+        if (resultsById.isEmpty()) return
+        gate.mutex.withLock {
+            if (auth.account.value != account) return@withLock
+            val currentRows = dao.messages(account.id, peerKey).first()
+            val updatedRows = currentRows.mapNotNull { row ->
+                if (row.deleted) return@mapNotNull null
+                val history = row.history()
+                val pollId = history.pollMessageOrNull()?.pollId ?: return@mapNotNull null
+                val result = resultsById[pollId] ?: return@mapNotNull null
+                val updated = history.withPollResult(result)
+                row.copy(metadata = updated.toByteArray())
+            }
+            if (updatedRows.isNotEmpty()) dao.messages(updatedRows)
+        }
     }
 
     override suspend fun queue(peer: Peer, text: String, reply: ChatMessage?): Long =
@@ -193,6 +286,7 @@ internal class DefaultMessengerRepository(
         if (session.account.id != message.accountId) return@withLock
         val latest = dao.message(message.accountId, peer.key, message.rid) ?: return@withLock
         if (latest.delivery == Delivery.Sent.name || latest.deleted || auth.account.value?.id != message.accountId) return@withLock
+        val exPeerType = resolveExPeerType(session, peer)
         gate.mutex.withLock { dao.delivery(message.accountId, peer.key, message.rid, Delivery.Pending.name, message.date) }
         try {
             val stored = latest.history()
@@ -200,7 +294,7 @@ internal class DefaultMessengerRepository(
                 stored.quotedMessage.messageId.value, stored.quotedMessage.messageDate, latest.replySeq,
             ) else null
             val content = if (stored.hasMessage()) stored.message else MessagingApi.text(latest.text)
-            val response = session.messaging.send(peer, latest.rid, content, reply)
+            val response = session.messaging.send(peer, latest.rid, content, reply, exPeerType)
             gate.mutex.withLock {
                 if (auth.account.value?.id == message.accountId) {
                     dao.delivery(message.accountId, peer.key, message.rid, Delivery.Sent.name, response.date.takeIf { it > 0 } ?: message.date)
@@ -221,8 +315,26 @@ internal class DefaultMessengerRepository(
 
     override suspend fun sendMedia(peer: Peer, payload: UploadPayload, caption: String, reply: ChatMessage?) {
         val session = activeSession() ?: error("No account")
-        val uploaded = session.files.upload(session.account.id, payload, peer, session.token)
-        val content = FilesApi.documentMessage(uploaded, payload, caption)
+        val exPeerType = resolveExPeerType(session, peer)
+        val thumbInfo = if (payload.kind == AttachmentKind.Photo) generateFastThumbnail(payload.bytes) else FastThumb()
+        val enrichedPayload = if (payload.kind == AttachmentKind.Photo && (payload.width <= 0 || payload.height <= 0) &&
+            thumbInfo.fullWidth > 0 && thumbInfo.fullHeight > 0
+        ) {
+            payload.copy(width = thumbInfo.fullWidth, height = thumbInfo.fullHeight)
+        } else {
+            payload
+        }
+        val uploaded = session.files.upload(session.account.id, enrichedPayload, peer, session.token, exPeerType)
+        val ownerAccessHash = if (exPeerType == ExPeerKind.CHANNEL) peer.id.toLong() else session.account.id.toLong()
+        val content = FilesApi.documentMessage(
+            uploaded = uploaded,
+            payload = enrichedPayload,
+            caption = caption,
+            accessHash = ownerAccessHash,
+            thumbnail = thumbInfo.bytes,
+            thumbWidth = thumbInfo.thumbWidth,
+            thumbHeight = thumbInfo.thumbHeight,
+        )
         val rid = queueMessageContent(peer, content, reply)
         cacheLocalBytes(session.account.id, uploaded.fileId, uploaded.name, payload.bytes)
         retry(peer, rid)
@@ -301,7 +413,8 @@ internal class DefaultMessengerRepository(
     override suspend fun forward(from: Peer, to: Peer, message: ChatMessage) {
         val session = activeSession() ?: error("No account")
         require(message.peerKey == from.key && !message.deleted && message.delivery == Delivery.Sent)
-        session.messaging.forward(from, to, message.reference, random.nextLong().ushr(2).coerceAtLeast(1))
+        val toExPeerType = resolveExPeerType(session, to)
+        session.messaging.forward(from, to, message.reference, random.nextLong().ushr(2).coerceAtLeast(1), toExPeerType)
         dirtyDialogs.tryEmit(Unit)
     }
 
@@ -354,8 +467,16 @@ internal class DefaultMessengerRepository(
         val cleanOptions = options.map { it.trim() }.filter { it.isNotBlank() }
         require(cleanQuestion.isNotBlank() && cleanOptions.size >= 2)
         val session = activeSession() ?: error("No account")
-        val now = System.currentTimeMillis()
-        val pollId = session.messaging.createPoll(peer, cleanQuestion, cleanOptions, anonymous, multipleChoice, now)
+        val exPeerType = resolveExPeerType(session, peer)
+        val pollId = session.messaging.createPoll(
+            peer = peer,
+            question = cleanQuestion,
+            options = cleanOptions,
+            anonymous = anonymous,
+            multiple = multipleChoice,
+            now = 0L,
+            exPeerType = exPeerType,
+        )
         val content = Message2.newBuilder()
             .setPollMessage(MessagingApi.pollMessage(pollId, cleanQuestion, cleanOptions, anonymous, multipleChoice))
             .build()
@@ -367,15 +488,19 @@ internal class DefaultMessengerRepository(
         val poll = message.poll ?: error("Not a poll message")
         val session = activeSession() ?: error("No account")
         val account = session.account
-        val result = session.messaging.votePoll(poll.pollId, optionIds, retract, System.currentTimeMillis())
+        val alreadyVoted = poll.options.any { it.chosen }
+        val result = if (retract || optionIds.isEmpty()) {
+            session.messaging.votePoll(poll.pollId, emptyList(), retract = true, now = 0L)
+        } else {
+            if (alreadyVoted) {
+                session.messaging.votePoll(poll.pollId, emptyList(), retract = true, now = 0L)
+            }
+            session.messaging.votePoll(poll.pollId, optionIds, retract = false, now = 0L)
+        }
         gate.mutex.withLock {
             if (auth.account.value == account) dao.message(account.id, peer.key, message.rid)?.let { row ->
-                val history = row.history()
-                if (history.message.hasPollMessage()) {
-                    val updatedPoll = history.message.pollMessage.toBuilder().setResult(result).build()
-                    val updatedHistory = history.toBuilder().setMessage(history.message.toBuilder().setPollMessage(updatedPoll)).build()
-                    dao.messages(listOf(row.copy(metadata = updatedHistory.toByteArray())))
-                }
+                val updatedHistory = row.history().withPollResult(result)
+                dao.messages(listOf(row.copy(metadata = updatedHistory.toByteArray())))
             }
         }
     }
@@ -389,12 +514,9 @@ internal class DefaultMessengerRepository(
         gate.mutex.withLock {
             if (auth.account.value == account) dao.message(account.id, peer.key, message.rid)?.let { row ->
                 val history = row.history()
-                if (history.message.hasPollMessage()) {
-                    val pollBuilder = history.message.pollMessage.toBuilder()
-                    pollBuilder.setResult((refreshed ?: pollBuilder.result).toBuilder().setIsClosed(true))
-                    val updatedHistory = history.toBuilder().setMessage(history.message.toBuilder().setPollMessage(pollBuilder)).build()
-                    dao.messages(listOf(row.copy(metadata = updatedHistory.toByteArray())))
-                }
+                val baseResult = refreshed ?: history.pollMessageOrNull()?.result ?: PollResult.getDefaultInstance()
+                val updatedHistory = history.withPollResult(baseResult.toBuilder().setIsClosed(true).build())
+                dao.messages(listOf(row.copy(metadata = updatedHistory.toByteArray())))
             }
         }
     }
@@ -414,6 +536,7 @@ internal class DefaultMessengerRepository(
         val session = activeSession() ?: return emptyList()
         val resp = session.directory.contacts()
         val hashes = resp.userPeersList.associate { it.uid to it.accessHash }
+        resp.usersList.forEach { recordUserMeta(session.account.id, it, hashes[it.id] ?: 0L) }
         return resp.usersList.map { user ->
             ContactEntry(
                 peer = Peer(user.id, 1, hashes[user.id] ?: user.accessHash),
@@ -431,6 +554,8 @@ internal class DefaultMessengerRepository(
         val resp = session.directory.searchContacts(query)
         val userHashes = resp.userPeersList.associate { it.uid to it.accessHash }
         val groupHashes = resp.groupPeersList.associate { it.groupId to it.accessHash }
+        resp.usersList.forEach { recordUserMeta(session.account.id, it, userHashes[it.id] ?: 0L) }
+        resp.groupsList.forEach { recordGroupMeta(session.account.id, it.id, it.groupType) }
         val users = resp.usersList.map { user ->
             ContactEntry(
                 peer = Peer(user.id, 1, userHashes[user.id] ?: user.accessHash),
@@ -475,8 +600,11 @@ internal class DefaultMessengerRepository(
         }.getOrDefault(emptyList())
         return if (peer.kind == 1) {
             val full = session.directory.fullUser(peer)
+            val resolvedHash = full.accessHash.takeIf { it != 0L } ?: peer.accessHash
+            if (peer.id == account.id && resolvedHash != 0L) ownAccessHashes[account.id] = resolvedHash
+            exPeerTypes["${account.id}:${peer.key}"] = if (full.isBot.value) ExPeerKind.BOT else ExPeerKind.PRIVATE
             PeerProfile(
-                peer = Peer(peer.id, 1, full.accessHash.takeIf { it != 0L } ?: peer.accessHash),
+                peer = Peer(peer.id, 1, resolvedHash),
                 title = full.name.ifBlank { peer.id.toString() },
                 handle = full.nick.value,
                 about = full.about.value,
@@ -488,6 +616,7 @@ internal class DefaultMessengerRepository(
             )
         } else {
             val full = session.directory.fullGroup(peer)
+            if (full.id != 0) recordGroupMeta(account.id, full.id, full.groupType)
             val rawMembers = runCatching { session.directory.members(peer) }.getOrDefault(full.members17List)
             val userMap = runCatching {
                 session.messaging.users(rawMembers.map { UserPeers.newBuilder().setUid(it.uid).build() })
@@ -527,8 +656,9 @@ internal class DefaultMessengerRepository(
 
     override suspend fun uploadOwnAvatar(payload: UploadPayload) {
         val session = activeSession() ?: error("No account")
-        val uploaded = session.files.upload(session.account.id, payload, null, session.token)
-        session.directory.editAvatar(uploaded.fileId)
+        val ownPeer = Peer(session.account.id, 1, ownAccessHashes[session.account.id] ?: 0L)
+        val uploaded = session.files.upload(session.account.id, payload, ownPeer, session.token, ExPeerKind.PRIVATE)
+        session.directory.editAvatar(uploaded.fileId, session.account.id.toLong())
     }
 
     override suspend fun createCommunity(title: String, isChannel: Boolean, handle: String, members: List<Peer>): Peer {
@@ -537,6 +667,7 @@ internal class DefaultMessengerRepository(
         val group = session.directory.createCommunity(
             random.nextLong().ushr(2).coerceAtLeast(1), title, isChannel, handle, members,
         )
+        recordGroupMeta(session.account.id, group.id, if (isChannel) 1 else group.groupType)
         val created = Peer(group.id, 2, group.accessHash)
         gate.mutex.withLock {
             if (auth.account.value == session.account) {
@@ -564,6 +695,7 @@ internal class DefaultMessengerRepository(
             session.directory.joinPublic(found.peer)
         }
         if (group.id == 0) return null
+        recordGroupMeta(session.account.id, group.id, group.groupType)
         val joined = Peer(group.id, 2, group.accessHash)
         dirtyDialogs.tryEmit(Unit)
         return joined
@@ -706,6 +838,7 @@ internal class DefaultMessengerRepository(
         var notifyTitle: String? = null
         var notifyText: String? = null
         var notifyId = 0
+        var incomingPollPeer: Peer? = null
         gate.mutex.withLock {
             if (auth.account.value != account || session != socket.sessionId) return@withLock
             database.withTransaction {
@@ -714,16 +847,24 @@ internal class DefaultMessengerRepository(
                     val key = "${m.peer.type}:${m.peer.id}"
                     val history = History.newBuilder().setRid(m.rid).setDate(m.date).setSenderUid(m.senderUid).setMessage(m.message)
                     if (m.hasQuotedMessage()) history.setQuotedMessage(m.quotedMessage)
-                    merge(history.build().entity(account.id, key))
+                    val built = history.build()
+                    merge(built.entity(account.id, key))
+                    if (built.pollMessageOrNull()?.pollId?.let { it != 0L } == true && m.peer.type in 1..2) {
+                        incomingPollPeer = Peer(m.peer.id, m.peer.type, dao.conversation(account.id, key)?.accessHash ?: 0L)
+                    }
                     if (m.senderUid != account.id && !m.isSilent) {
                         notifyTitle = dao.conversation(account.id, key)?.title ?: key
-                        notifyText = contentText(m.message).ifBlank { "New message" }
+                        notifyText = contentText(effectiveHistoryMessage(built)).ifBlank { "New message" }
                         notifyId = key.hashCode()
                     }
                 }
                 if (update.hasMessages()) {
                     val m = update.messages
-                    merge(m.field18.entity(account.id, "${m.peer.type}:${m.peer.id}"))
+                    val key = "${m.peer.type}:${m.peer.id}"
+                    merge(m.field18.entity(account.id, key))
+                    if (m.field18.pollMessageOrNull()?.pollId?.let { it != 0L } == true && m.peer.type in 1..2) {
+                        incomingPollPeer = Peer(m.peer.id, m.peer.type, dao.conversation(account.id, key)?.accessHash ?: 0L)
+                    }
                 }
                 if (update.hasMessageSent()) {
                     val m = update.messageSent
@@ -779,6 +920,7 @@ internal class DefaultMessengerRepository(
         }
         if (session != socket.sessionId || auth.account.value != account) return
         if (notifyTitle != null && notifyText != null) notifier?.show(notifyId, notifyTitle!!, notifyText!!)
+        incomingPollPeer?.let { targetPeer -> scope.launch { safely { refreshPolls(targetPeer) } } }
         if (update.hasUserOnline()) mutableOnline.update { it + update.userOnline.uid }
         if (update.hasUserOffline()) mutableOnline.update { it - update.userOffline.uid }
         if (update.hasTyping()) {
@@ -809,10 +951,58 @@ internal class DefaultMessengerRepository(
     private suspend fun merge(incoming: MessageEntity) {
         val old = dao.message(incoming.accountId, incoming.peerKey, incoming.rid)
         if (old?.deleted == true || dao.isDeleted(incoming.accountId, incoming.peerKey, incoming.date, incoming.rid)) return
-        val metadata = incoming.history().toBuilder()
-        if (old != null && !metadata.hasQuotedMessage() && old.history().hasQuotedMessage()) metadata.setQuotedMessage(old.history().quotedMessage)
-        dao.messages(listOf(incoming.copy(metadata = metadata.build().toByteArray(), received = old?.received ?: false,
-            read = old?.read ?: false, replySeq = old?.replySeq ?: 0)))
+        val mergedHistory = mergeHistoryPreservingState(old?.history(), incoming.history())
+        val effective = effectiveHistoryMessage(mergedHistory)
+        val mergedText = incoming.text.ifBlank { contentText(effective) }
+        val mergedSupported = incoming.supported || isSupportedMessage(effective)
+        dao.messages(listOf(incoming.copy(
+            text = mergedText,
+            supported = mergedSupported,
+            metadata = mergedHistory.toByteArray(),
+            received = old?.received ?: false,
+            read = old?.read ?: false,
+            replySeq = old?.replySeq ?: 0,
+        )))
+    }
+
+    private data class FastThumb(
+        val bytes: ByteArray = byteArrayOf(),
+        val thumbWidth: Int = 0,
+        val thumbHeight: Int = 0,
+        val fullWidth: Int = 0,
+        val fullHeight: Int = 0,
+    )
+
+    private fun generateFastThumbnail(raw: ByteArray, maxEdge: Int = 90): FastThumb = try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+        val fullW = bounds.outWidth
+        val fullH = bounds.outHeight
+        if (fullW <= 0 || fullH <= 0) {
+            FastThumb()
+        } else {
+            var sample = 1
+            while (fullW / sample > maxEdge * 2 || fullH / sample > maxEdge * 2) sample *= 2
+            val decoded = BitmapFactory.decodeByteArray(raw, 0, raw.size, BitmapFactory.Options().apply { inSampleSize = sample })
+            if (decoded == null) {
+                FastThumb(fullWidth = fullW, fullHeight = fullH)
+            } else {
+                val scale = minOf(1f, maxEdge.toFloat() / maxOf(decoded.width, decoded.height))
+                val targetW = (decoded.width * scale).toInt().coerceAtLeast(1)
+                val targetH = (decoded.height * scale).toInt().coerceAtLeast(1)
+                val scaled = if (targetW == decoded.width && targetH == decoded.height) decoded else {
+                    Bitmap.createScaledBitmap(decoded, targetW, targetH, true).also {
+                        if (it !== decoded) decoded.recycle()
+                    }
+                }
+                val out = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 35, out)
+                scaled.recycle()
+                FastThumb(out.toByteArray(), targetW, targetH, fullW, fullH)
+            }
+        }
+    } catch (_: Throwable) {
+        FastThumb()
     }
 
     private suspend fun safely(block: suspend () -> Unit) {

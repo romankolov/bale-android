@@ -145,14 +145,15 @@ class MessagingApiTest {
         assertEquals(message.rid, (rpc.request as Messaging_UnPinMessages_Request).messagesList.single().rid)
 
         rpc.response = Poll_CreatePoll_Response.newBuilder().setPollId(777L).build().toByteArray()
-        assertEquals(777L, api.createPoll(peer, "Lunch?", listOf("Kebab", "Rice"), anonymous = true, multiple = true, now = 5000L))
+        assertEquals(777L, api.createPoll(peer, "Lunch?", listOf("Kebab", "Rice"), anonymous = true, multiple = true, now = 5000L, exPeerType = 3))
         assertEquals("bale.poll.v1.Poll", rpc.service)
         assertEquals("CreatePoll", rpc.method)
+        assertEquals(3, (rpc.request as Poll_CreatePoll_Request).peer.type)
 
         rpc.response = Poll_Vote_Response.newBuilder().setPollResult(PollResult.newBuilder().setVotersCount(3)).build().toByteArray()
         val result = api.votePoll(777L, listOf(0, 1), retract = false, now = 6000L)
         assertEquals(3, result.votersCount)
-        assertEquals(listOf(0L, 1L), (rpc.request as Poll_Vote_Request).optionIdsList)
+        assertEquals(listOf(0, 1), (rpc.request as Poll_Vote_Request).optionIdsList)
 
         val callback = MessagingApi.templateResponse("cb:1", 42L)
         assertEquals("cb:1", callback.templateMessageResponse.tmrMessage)

@@ -8769,7 +8769,7 @@ message Poll_Vote_Request {
   int64 pollId = 1;
   bool isRetract = 2;
   int64 voteAt = 3;
-  repeated int64 optionIds = 4;
+  repeated int32 optionIds = 4;
 }
 
 message Poll_Vote_Response {

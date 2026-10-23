@@ -15,10 +15,13 @@ import java.net.URLDecoder
 import java.nio.ByteBuffer
 
 object BaleEndpoint {
-    const val HTTP = "https://next-ws.bale.ai/"
-    const val SOCKET = "wss://next-ws.bale.ai/ws/"
+    const val HOST = "next-ws.bale.ai"
+    const val HTTP = "https://$HOST/"
+    const val SOCKET = "wss://$HOST/ws/"
     const val ORIGIN = "https://web.bale.ai"
     const val VERSION = "176652"
+    const val USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
     // Public web-client identifier from the supplied archive, not a user secret.
     const val APP_KEY = "C28D46DC4C3A7A26564BFCC48B929086A95C93C98E789A19847BEE8627DE4E7D"
 }

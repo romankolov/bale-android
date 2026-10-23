@@ -122,4 +122,51 @@ class MessengerScreenTest {
             assertEquals(listOf(0), repository.votedOptions)
         }
     }
+
+    @Test fun forwardedMessagesRenderOriginHeaderAndSupportedBody() {
+        val fwdMsg = ChatMessage(
+            peerKey = peer.key,
+            rid = 301,
+            senderId = 42,
+            text = "Forwarded announcement body",
+            date = 1761177606000,
+            delivery = Delivery.Sent,
+            supported = true,
+            forwardedFrom = ForwardedInfo(senderUserId = 88, publicGroupId = 555, authorName = "Bale News"),
+        )
+        show(initialOpen = true, initialMessage = fwdMsg)
+        compose.onNodeWithText("↪ Forwarded · Bale News").assertIsDisplayed()
+        compose.onNodeWithText("Forwarded announcement body").assertIsDisplayed()
+    }
+
+    @Test fun multipleChoicePollsSelectOptionsAndSubmitCombinedVote() {
+        val multiPollMsg = ChatMessage(
+            peerKey = peer.key,
+            rid = 302,
+            senderId = 42,
+            text = "Pick two?",
+            date = 1761177607000,
+            delivery = Delivery.Sent,
+            poll = PollView(
+                pollId = 602L,
+                question = "Pick two?",
+                options = listOf(
+                    PollOptionView(0, "Alpha", 0, false),
+                    PollOptionView(1, "Beta", 0, false),
+                    PollOptionView(2, "Gamma", 0, false),
+                ),
+                anonymous = true,
+                multipleChoice = true,
+                closed = false,
+                totalVoters = 0,
+            ),
+        )
+        val repo = show(initialOpen = true, initialMessage = multiPollMsg)
+        compose.onNodeWithText("Alpha (0)").performClick()
+        compose.onNodeWithText("Gamma (0)").performClick()
+        compose.onNodeWithText("Submit vote").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(0, 2), repo.votedOptions)
+        }
+    }
 }

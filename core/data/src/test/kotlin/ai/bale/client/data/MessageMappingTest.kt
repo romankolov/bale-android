@@ -3,9 +3,11 @@ package ai.bale.client.data
 import ai.bale.client.domain.AttachmentKind
 import ai.bale.client.domain.BotButtonKind
 import ai.bale.client.domain.Delivery
+import ai.bale.client.domain.ForwardedInfo
 import ai.bale.client.network.MessagingApi
 import ai.bale.client.protocol.*
 import com.google.protobuf.ByteString
+import com.google.protobuf.Int32Value
 import com.google.protobuf.Int64Value
 import com.google.protobuf.StringValue
 import org.junit.Assert.*
@@ -21,6 +23,7 @@ class MessageMappingTest {
             .build()
         val message = history.entity(7, "1:9").domain()
         assertEquals("answer", message.text)
+        assertNull(message.forwardedFrom)
         assertEquals(88L, message.quote?.rid)
         assertEquals("question", message.quote?.text)
         assertEquals(77L, message.reference.sequence)
@@ -69,6 +72,64 @@ class MessageMappingTest {
         val svcMsg = Message2.newBuilder().setServiceMessage(ServiceMessage.newBuilder().setText("Group created")).build()
         val mappedSvc = History.newBuilder().setRid(4).setDate(13).setMessage(svcMsg).build().entity(7, "2:9").domain()
         assertTrue(mappedSvc.serviceNotice)
+    }
+
+    @Test fun `forwarded text media and poll envelopes unwrap emptyMessage and preserve poll results across sync`() {
+        val fwdHistory = History.newBuilder()
+            .setRid(501)
+            .setDate(2000)
+            .setSenderUid(12)
+            .setMessage(Message2.newBuilder().setEmptyMessage(EmptyMessage.getDefaultInstance()))
+            .setQuotedMessage(
+                QuotedMessage.newBuilder()
+                    .setSenderUserId(88)
+                    .setPublicGroupId(Int32Value.of(555))
+                    .setAuthorSign(StringValue.of("Bale News"))
+                    .setQuotedMessageContent(MessagingApi.text("Forwarded breaking update"))
+            )
+            .build()
+
+        val mapped = fwdHistory.entity(7, "1:12").domain()
+        assertTrue(mapped.supported)
+        assertEquals("Forwarded breaking update", mapped.text)
+        assertNull(mapped.quote)
+        assertEquals(ForwardedInfo(88, 555, "Bale News"), mapped.forwardedFrom)
+
+        // Pre-existing Room v3 rows written with empty text & supported=false upgrade transparently on read
+        val staleCached = MessageEntity(7, "1:12", 501, 12, "", 2000, "Sent", false, fwdHistory.toByteArray())
+        val upgraded = staleCached.domain()
+        assertTrue(upgraded.supported)
+        assertEquals("Forwarded breaking update", upgraded.text)
+        assertEquals("Bale News", upgraded.forwardedFrom?.authorName)
+
+        // Forwarded poll keeps hydrated PollResult across subsequent LoadHistory syncs where PollMessage has no result
+        val rawFwdPoll = History.newBuilder()
+            .setRid(502)
+            .setDate(2001)
+            .setSenderUid(12)
+            .setMessage(Message2.newBuilder().setEmptyMessage(EmptyMessage.getDefaultInstance()))
+            .setQuotedMessage(
+                QuotedMessage.newBuilder()
+                    .setSenderUserId(99)
+                    .setQuotedMessageContent(
+                        Message2.newBuilder().setPollMessage(
+                            PollMessage.newBuilder().setPollId(777L).setQuestion("Forwarded poll?")
+                                .addOptions(Options.newBuilder().setId(0).setText("Option A"))
+                                .addOptions(Options.newBuilder().setId(1).setText("Option B"))
+                        )
+                    )
+            )
+            .build()
+        val hydrated = rawFwdPoll.withPollResult(
+            PollResult.newBuilder().setPollId(777L).setVotersCount(9).addChosenOptionIds(1L)
+                .addOptionResults(OptionResults.newBuilder().setOptionId(1).setVotesCount(6)).build()
+        )
+        val mergedAfterReload = mergeHistoryPreservingState(hydrated, rawFwdPoll)
+        val domainPoll = mergedAfterReload.entity(7, "1:12").domain()
+        assertTrue(domainPoll.supported)
+        assertEquals(9, domainPoll.poll?.totalVoters)
+        assertEquals(6, domainPoll.poll?.options?.get(1)?.votes)
+        assertTrue(domainPoll.poll?.options?.get(1)?.chosen == true)
     }
 
     @Test fun `legacy row and malformed optional cache metadata preserve message text`() {

@@ -11,6 +11,7 @@ import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.content.FileProvider
@@ -21,35 +22,48 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 
-internal const val MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+internal const val MAX_ATTACHMENT_BYTES = 64 * 1024 * 1024
 
-internal suspend fun readPickedUri(context: Context, uri: Uri, forcePhotoOrVideo: Boolean = false): UploadPayload? =
+internal suspend fun readPickedUri(context: Context, uri: Uri, forcePhotoOrVideo: Boolean = false): UploadPayload =
     withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val rawMime = resolver.getType(uri).orEmpty()
-        var displayName = "attachment"
+        var displayName = ""
         resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) {
                 val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0 && !cursor.isNull(idx)) displayName = cursor.getString(idx)
+                if (idx >= 0 && !cursor.isNull(idx)) displayName = cursor.getString(idx).orEmpty()
             }
+        }
+        if (displayName.isBlank()) displayName = uri.lastPathSegment?.substringAfterLast('/').orEmpty()
+        val extFromName = displayName.substringAfterLast('.', "").lowercase()
+        val mime = rawMime
+            .ifBlank { MimeTypeMap.getSingleton().getMimeTypeFromExtension(extFromName).orEmpty() }
+            .ifBlank { if (forcePhotoOrVideo) "image/jpeg" else "application/octet-stream" }
+        if (displayName.isBlank()) {
+            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime).orEmpty()
+            displayName = if (ext.isNotBlank()) "attachment.$ext" else "attachment"
         }
         val bytes = resolver.openInputStream(uri)?.use { input ->
             val out = ByteArrayOutputStream()
-            val buf = ByteArray(8_192)
+            val buf = ByteArray(16_384)
             var total = 0
             while (true) {
                 val n = input.read(buf)
                 if (n < 0) break
                 total += n
-                require(total <= MAX_ATTACHMENT_BYTES) { "Attachment exceeds 50 MB limit" }
+                require(total <= MAX_ATTACHMENT_BYTES) { "Attachment exceeds 64 MB limit" }
                 out.write(buf, 0, n)
             }
             out.toByteArray()
-        } ?: return@withContext null
-        if (bytes.isEmpty()) return@withContext null
-        val mime = rawMime.ifBlank { if (forcePhotoOrVideo) "image/jpeg" else "application/octet-stream" }
-        val kind = inferAttachmentKind(mime)
+        } ?: throw IllegalStateException("Cannot read selected file")
+        require(bytes.isNotEmpty()) { "Selected file is empty" }
+        val inferred = inferAttachmentKind(mime, displayName)
+        val kind = if (forcePhotoOrVideo && inferred != AttachmentKind.Photo && inferred != AttachmentKind.Video) {
+            if (mime.startsWith("video/", ignoreCase = true)) AttachmentKind.Video else AttachmentKind.Photo
+        } else {
+            inferred
+        }
         var width = 0
         var height = 0
         if (kind == AttachmentKind.Photo) {
@@ -147,7 +161,7 @@ internal class VoiceNoteRecorder(private val context: Context) {
         file.delete()
         return UploadPayload(
             name = "voice_${System.currentTimeMillis()}.m4a",
-            mimeType = "audio/mp4a-latm",
+            mimeType = "audio/mp4",
             bytes = bytes,
             kind = AttachmentKind.Voice,
             durationSeconds = duration,

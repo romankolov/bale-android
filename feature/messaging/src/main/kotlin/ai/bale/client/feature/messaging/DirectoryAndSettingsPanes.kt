@@ -185,6 +185,7 @@ internal fun SettingsPane(
     onRefresh: () -> Unit,
     onSaveProfile: (String, String, String) -> Unit,
     onUploadAvatar: (UploadPayload) -> Unit,
+    onUploadFailed: () -> Unit,
     onTerminateSession: (Int) -> Unit,
     onTerminateOtherSessions: () -> Unit,
     onLogout: () -> Unit,
@@ -199,7 +200,9 @@ internal fun SettingsPane(
 
     val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) scope.launch {
-            runCatching { readPickedUri(context, uri, forcePhotoOrVideo = true) }.getOrNull()?.let(onUploadAvatar)
+            runCatching { readPickedUri(context, uri, forcePhotoOrVideo = true) }
+                .onSuccess(onUploadAvatar)
+                .onFailure { onUploadFailed() }
         }
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->

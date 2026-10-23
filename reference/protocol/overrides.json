@@ -44,8 +44,8 @@
   "Poll_Vote_Request": {
     "4": {
       "original": ["optionIds", "bytes", true],
-      "replacement": ["optionIds", "int64", true],
-      "evidence": "bale-start.zip: PollResult.chosenOptionIds is repeated int64; tag 34 is packed repeated int64 option IDs."
+      "replacement": ["optionIds", "int32", true],
+      "evidence": "bale-start.zip: MainRoutes.497778fd43.js mi.encode/mi.decode writes uint32(34).fork(), int32 for each optionId, join."
     }
   },
   "Field264": {

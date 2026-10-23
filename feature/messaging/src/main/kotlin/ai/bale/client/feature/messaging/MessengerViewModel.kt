@@ -49,6 +49,8 @@ class MessengerViewModel @Inject constructor(
     val error = mutableError.asStateFlow()
     private val operations = MutableStateFlow(0)
     val loading = operations.map { it > 0 }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    private val mutableUploading = MutableStateFlow<String?>(null)
+    val uploadingAttachment = mutableUploading.asStateFlow()
     private val mutableQueuing = MutableStateFlow(false)
     val queuing = mutableQueuing.asStateFlow()
     private val mutableComposer = MutableStateFlow(ComposerState())
@@ -113,6 +115,7 @@ class MessengerViewModel @Inject constructor(
                     historyJob?.cancel(); searchJob?.cancel(); directoryJob?.cancel(); typingJob?.cancel()
                     visibleRead.value = null
                     acknowledgedReads.clear()
+                    mutableUploading.value = null
                     mutableComposer.value = ComposerState()
                     mutableSearch.value = SearchState()
                     mutableDownloaded.value = emptyMap()
@@ -142,6 +145,7 @@ class MessengerViewModel @Inject constructor(
     }
 
     fun search(value: String) { mutableQuery.value = value }
+    fun reportOperationError() { mutableError.value = true }
 
     fun open(peer: Peer) {
         stopTyping()
@@ -167,6 +171,11 @@ class MessengerViewModel @Inject constructor(
     fun refresh() = operation {
         messenger.refreshConversations()
         selected.value?.let { messenger.loadHistory(it) }
+    }
+
+    fun refreshSelectedPolls() {
+        val peer = selected.value ?: return
+        viewModelScope.launch { quiet { messenger.refreshPolls(peer) } }
     }
 
     fun moreConversations() = operation { mutableMoreDialogs.value = messenger.loadMoreConversations() >= PAGE_SIZE }
@@ -219,7 +228,12 @@ class MessengerViewModel @Inject constructor(
         val reply = composer.value.reply
         mutableComposer.value = ComposerState()
         operation {
-            messenger.sendMedia(peer, payload, caption, reply)
+            mutableUploading.value = payload.name
+            try {
+                messenger.sendMedia(peer, payload, caption, reply)
+            } finally {
+                mutableUploading.value = null
+            }
         }
     }
 
@@ -269,6 +283,21 @@ class MessengerViewModel @Inject constructor(
             if (optionId in current) emptyList() else listOf(optionId)
         }
         operation(false) { messenger.votePoll(peer, message, next, retract = next.isEmpty()) }
+    }
+
+    fun submitPollSelection(message: ChatMessage, optionIds: List<Int>) {
+        val peer = selected.value ?: return
+        val poll = message.poll ?: return
+        if (poll.closed) return
+        val clean = optionIds.distinct()
+        operation(false) { messenger.votePoll(peer, message, clean, retract = clean.isEmpty()) }
+    }
+
+    fun retractPollVote(message: ChatMessage) {
+        val peer = selected.value ?: return
+        val poll = message.poll ?: return
+        if (poll.closed) return
+        operation(false) { messenger.votePoll(peer, message, emptyList(), retract = true) }
     }
 
     fun closePoll(message: ChatMessage) {
@@ -424,7 +453,12 @@ class MessengerViewModel @Inject constructor(
     }
 
     fun uploadOwnAvatar(payload: UploadPayload) = operation {
-        messenger.uploadOwnAvatar(payload)
+        mutableUploading.value = payload.name
+        try {
+            messenger.uploadOwnAvatar(payload)
+        } finally {
+            mutableUploading.value = null
+        }
     }
 
     fun terminateSession(id: Int) = operation {

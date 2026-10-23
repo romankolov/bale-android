@@ -117,7 +117,9 @@ class ProtocolTest(unittest.TestCase):
 
     def test_reactions_polls_and_thumbnails_preserve_wire_shapes(self):
         vote = bale.Poll_Vote_Request(pollId=55, optionIds=[1, 3])
-        self.assertEqual([1, 3], list(bale.Poll_Vote_Request.FromString(vote.SerializeToString()).optionIds))
+        raw_vote = vote.SerializeToString()
+        self.assertIn(blob(4, b''.join(varint(i) for i in [1, 3])), raw_vote)
+        self.assertEqual([1, 3], list(bale.Poll_Vote_Request.FromString(raw_vote).optionIds))
         resp = bale.Msg_4825_fafe26abbf__79002_p(reactions=[
             bale.Field264(users=[7, 42], code='👍'),
             bale.Field264(users=[9], code='❤️'),

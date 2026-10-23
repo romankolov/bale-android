@@ -47,12 +47,14 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.compose.itemKey
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,6 +68,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val onlineUsers by viewModel.onlineUsers.collectAsStateWithLifecycle()
     val loading by viewModel.loading.collectAsStateWithLifecycle()
+    val uploadingName by viewModel.uploadingAttachment.collectAsStateWithLifecycle()
     val queuing by viewModel.queuing.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
@@ -166,11 +169,16 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                 }) { Text(stringResource(R.string.copy_message)) }
                 if (!message.deleted && message.delivery == Delivery.Sent) {
                     TextButton(onClick = { viewModel.reply(message); action = null }) { Text(stringResource(R.string.reply_message)) }
-                    if (message.senderId == account?.id && message.attachment == null && message.poll == null) {
+                    if (message.senderId == account?.id && message.attachment == null && message.poll == null && message.forwardedFrom == null) {
                         TextButton(onClick = { viewModel.edit(message); action = null }) { Text(stringResource(R.string.edit_message)) }
                     }
                     TextButton(onClick = { forwarding = message; action = null }) { Text(stringResource(R.string.forward_message)) }
                     TextButton(onClick = { viewModel.pinMessage(message, true); action = null }) { Text(stringResource(R.string.pin_message_action)) }
+                    if (message.poll?.closed == false && message.poll?.options?.any { it.chosen } == true) {
+                        TextButton(onClick = { viewModel.retractPollVote(message); action = null }) {
+                            Text(stringResource(R.string.poll_retract_vote))
+                        }
+                    }
                     if (message.poll?.closed == false && message.senderId == account?.id) {
                         TextButton(onClick = { viewModel.closePoll(message); action = null }) { Text(stringResource(R.string.close_poll)) }
                     }
@@ -261,8 +269,10 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                                 ChatPane(
                                     title = allChats.firstOrNull { it.peer.key == peer.key }?.title ?: peer.id.toString(),
                                     peer = peer,
+                                    connection = connection,
                                     peerOnline = peer.kind == 1 && peer.id in onlineUsers,
                                     queuing = queuing,
+                                    uploadingName = uploadingName,
                                     messages = messages,
                                     me = account?.id,
                                     composer = composer,
@@ -276,14 +286,19 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                                     onInspect = viewModel::inspectSelectedPeer,
                                     onSend = viewModel::send,
                                     onSendAttachment = { payload, caption -> viewModel.sendAttachment(payload, caption) },
+                                    onAttachmentPickFailed = viewModel::reportOperationError,
                                     onOpenPollDialog = { showCreatePoll = true },
                                     onStartVoice = {
-                                        if (voiceRecorder.start()) recordingVoice = true
+                                        if (voiceRecorder.start()) recordingVoice = true else viewModel.reportOperationError()
                                     },
                                     onFinishVoice = { send ->
                                         recordingVoice = false
-                                        if (send) voiceRecorder.finish()?.let { viewModel.sendAttachment(it) }
-                                        else voiceRecorder.stopAndDiscard()
+                                        if (send) {
+                                            val note = voiceRecorder.finish()
+                                            if (note != null) viewModel.sendAttachment(note) else viewModel.reportOperationError()
+                                        } else {
+                                            voiceRecorder.stopAndDiscard()
+                                        }
                                     },
                                     onDownloadOrOpen = { attachment ->
                                         val existing = downloaded[attachment.fileId]
@@ -304,6 +319,9 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                                         }
                                     },
                                     onVotePoll = viewModel::votePoll,
+                                    onSubmitPollSelection = viewModel::submitPollSelection,
+                                    onRetractPollVote = viewModel::retractPollVote,
+                                    onRefreshPolls = viewModel::refreshSelectedPolls,
                                     onBotButton = { button ->
                                         when (button.kind) {
                                             BotButtonKind.OpenUrl -> {
@@ -360,6 +378,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                             onRefresh = { viewModel.refreshSettings() },
                             onSaveProfile = viewModel::saveOwnProfile,
                             onUploadAvatar = viewModel::uploadOwnAvatar,
+                            onUploadFailed = viewModel::reportOperationError,
                             onTerminateSession = viewModel::terminateSession,
                             onTerminateOtherSessions = { viewModel.terminateOtherSessions() },
                             onLogout = { confirmLogout = true },
@@ -446,17 +465,22 @@ private fun ConversationList(
 
 @Composable
 private fun ChatPane(
-    title: String, peer: Peer, peerOnline: Boolean, queuing: Boolean, messages: LazyPagingItems<ChatMessage>, me: Int?,
+    title: String, peer: Peer, connection: Connection, peerOnline: Boolean, queuing: Boolean,
+    uploadingName: String?, messages: LazyPagingItems<ChatMessage>, me: Int?,
     composer: ComposerState, typing: Boolean, more: Boolean, loading: Boolean,
     downloaded: Map<Long, String>, playingPath: String?, recordingVoice: Boolean,
     onBack: () -> Unit, onInspect: () -> Unit,
     onSend: (String, () -> Unit) -> Unit,
     onSendAttachment: (UploadPayload, String) -> Unit,
+    onAttachmentPickFailed: () -> Unit,
     onOpenPollDialog: () -> Unit,
     onStartVoice: () -> Unit,
     onFinishVoice: (Boolean) -> Unit,
     onDownloadOrOpen: (Attachment) -> Unit,
     onVotePoll: (ChatMessage, Int) -> Unit,
+    onSubmitPollSelection: (ChatMessage, List<Int>) -> Unit,
+    onRetractPollVote: (ChatMessage) -> Unit,
+    onRefreshPolls: () -> Unit,
     onBotButton: (BotButton) -> Unit,
     onRetry: (ChatMessage) -> Unit, onOlder: () -> Unit, onRead: (Long) -> Unit,
     onActions: (ChatMessage) -> Unit, onReaction: (ChatMessage, String, Boolean) -> Unit, onCancelComposer: () -> Unit,
@@ -472,22 +496,26 @@ private fun ChatPane(
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) scope.launch {
-            runCatching { readPickedUri(context, uri, forcePhotoOrVideo = true) }.getOrNull()?.let { payload ->
-                followNewest = true
-                val caption = draft
-                draft = ""
-                onSendAttachment(payload, caption)
-            }
+            runCatching { readPickedUri(context, uri, forcePhotoOrVideo = true) }
+                .onSuccess { payload ->
+                    followNewest = true
+                    val caption = draft
+                    draft = ""
+                    onSendAttachment(payload, caption)
+                }
+                .onFailure { onAttachmentPickFailed() }
         }
     }
     val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
-            runCatching { readPickedUri(context, uri) }.getOrNull()?.let { payload ->
-                followNewest = true
-                val caption = draft
-                draft = ""
-                onSendAttachment(payload, caption)
-            }
+            runCatching { readPickedUri(context, uri) }
+                .onSuccess { payload ->
+                    followNewest = true
+                    val caption = draft
+                    draft = ""
+                    onSendAttachment(payload, caption)
+                }
+                .onFailure { onAttachmentPickFailed() }
         }
     }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -509,11 +537,27 @@ private fun ChatPane(
             if (item.index < messages.itemCount) messages.peek(item.index) else null
         }.filter { it.peerKey == peer.key && it.senderId != me && it.delivery == Delivery.Sent }.maxOfOrNull { it.date }
     } }
+    val hasOpenPolls by remember(messages, peer.key) { derivedStateOf {
+        (0 until messages.itemCount).any { idx ->
+            val msg = messages.peek(idx)
+            msg?.peerKey == peer.key && msg.poll?.closed == false
+        }
+    } }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(peer.key, visibleIncoming, lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             visibleIncoming?.let(onRead)
             awaitCancellation()
+        }
+    }
+    LaunchedEffect(peer.key, connection, hasOpenPolls, lifecycle) {
+        if (connection == Connection.Connected && hasOpenPolls) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (true) {
+                    delay(10_000)
+                    onRefreshPolls()
+                }
+            }
         }
     }
 
@@ -547,6 +591,8 @@ private fun ChatPane(
                         onReaction = onReaction,
                         onDownloadOrOpen = onDownloadOrOpen,
                         onVotePoll = onVotePoll,
+                        onSubmitPollSelection = onSubmitPollSelection,
+                        onRetractPollVote = onRetractPollVote,
                         onBotButton = onBotButton,
                     )
                 }
@@ -554,6 +600,23 @@ private fun ChatPane(
             if (messages.loadState.append is LoadState.Loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             if (messages.loadState.append.endOfPaginationReached && more) item {
                 TextButton(onClick = onOlder, enabled = !loading, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.load_older)) }
+            }
+        }
+        uploadingName?.let { activeName ->
+            Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text(
+                        stringResource(R.string.uploading_file, activeName),
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
         (composer.edit ?: composer.reply)?.let { message ->
@@ -639,6 +702,8 @@ private fun MessageBubble(
     onReaction: (ChatMessage, String, Boolean) -> Unit,
     onDownloadOrOpen: (Attachment) -> Unit,
     onVotePoll: (ChatMessage, Int) -> Unit,
+    onSubmitPollSelection: (ChatMessage, List<Int>) -> Unit,
+    onRetractPollVote: (ChatMessage) -> Unit,
     onBotButton: (BotButton) -> Unit,
 ) {
     if (message.serviceNotice) {
@@ -655,6 +720,21 @@ private fun MessageBubble(
                 .combinedClickable(onClick = { if (!message.deleted) onActions(message) }, onLongClick = { if (!message.deleted) onActions(message) })) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (!outgoing && group) Text(message.senderId.toString(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                message.forwardedFrom?.let { fwd ->
+                    val originLabel = when {
+                        fwd.authorName.isNotBlank() -> stringResource(R.string.forwarded_from_author, fwd.authorName)
+                        fwd.publicGroupId != 0 -> stringResource(R.string.forwarded_from_author, "#${fwd.publicGroupId}")
+                        fwd.senderUserId != 0 -> stringResource(R.string.forwarded_from_author, "#${fwd.senderUserId}")
+                        else -> stringResource(R.string.forwarded_header)
+                    }
+                    Text(
+                        "↪ $originLabel",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 message.quote?.let { quote ->
                     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
                         Text(quote.text.ifBlank { stringResource(R.string.unsupported_message) }, Modifier.padding(10.dp), maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
@@ -687,20 +767,12 @@ private fun MessageBubble(
                     }
                 }
                 message.poll?.let { poll ->
-                    Text(poll.question, style = MaterialTheme.typography.titleMedium)
-                    poll.options.forEach { option ->
-                        OutlinedButton(
-                            onClick = { onVotePoll(message, option.id) },
-                            enabled = !poll.closed,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                (if (option.chosen) "✓ " else "") + "${option.text} (${option.votes})",
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                    Text(stringResource(R.string.poll_votes_summary, poll.totalVoters), style = MaterialTheme.typography.labelSmall)
+                    PollBubbleSection(
+                        poll = poll,
+                        onVoteSingle = { optionId -> onVotePoll(message, optionId) },
+                        onSubmitMultiple = { ids -> onSubmitPollSelection(message, ids) },
+                        onRetract = { onRetractPollVote(message) },
+                    )
                 }
                 if (message.poll == null) {
                     Text(when {
@@ -738,6 +810,97 @@ private fun MessageBubble(
                         message.received -> R.string.delivered_message
                         else -> R.string.sent
                     }), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PollBubbleSection(
+    poll: PollView,
+    onVoteSingle: (Int) -> Unit,
+    onSubmitMultiple: (List<Int>) -> Unit,
+    onRetract: () -> Unit,
+) {
+    val anyChosen = poll.options.any { it.chosen }
+    var multiDraft by remember(poll.pollId, poll.options) {
+        mutableStateOf(poll.options.filter { it.chosen }.map { it.id }.toSet())
+    }
+    val sumVotes = poll.options.sumOf { it.votes }
+    val denominator = maxOf(poll.totalVoters, sumVotes).coerceAtLeast(1)
+    val summaryCount = if (poll.multipleChoice) poll.totalVoters else maxOf(poll.totalVoters, sumVotes)
+
+    Text(poll.question, style = MaterialTheme.typography.titleMedium)
+    val metaParts = buildList {
+        add(stringResource(if (poll.anonymous) R.string.poll_anonymous_badge else R.string.poll_public_badge))
+        if (poll.multipleChoice) add(stringResource(R.string.poll_multiple))
+        if (poll.closed) add(stringResource(R.string.poll_closed_badge))
+    }
+    Text(
+        metaParts.joinToString(" · "),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    poll.options.forEach { option ->
+        val isSelected = if (poll.multipleChoice && !anyChosen && !poll.closed) {
+            option.id in multiDraft
+        } else {
+            option.chosen
+        }
+        val marker = when {
+            poll.multipleChoice -> if (isSelected) "☑" else "☐"
+            else -> if (isSelected) "●" else "○"
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            OutlinedButton(
+                onClick = {
+                    if (poll.multipleChoice && !anyChosen) {
+                        multiDraft = if (option.id in multiDraft) multiDraft - option.id else multiDraft + option.id
+                    } else if (!poll.multipleChoice) {
+                        onVoteSingle(option.id)
+                    } else {
+                        val updated = if (option.id in multiDraft) multiDraft - option.id else multiDraft + option.id
+                        multiDraft = updated
+                        onSubmitMultiple(updated.toList())
+                    }
+                },
+                enabled = !poll.closed,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(marker, modifier = Modifier.padding(end = 8.dp))
+                Text("${option.text} (${option.votes})", modifier = Modifier.weight(1f))
+                if (sumVotes > 0 || poll.totalVoters > 0) {
+                    val pct = ((option.votes.toFloat() / denominator.toFloat()) * 100f).roundToInt().coerceIn(0, 100)
+                    Text("$pct%", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            if (sumVotes > 0 || poll.totalVoters > 0) {
+                LinearProgressIndicator(
+                    progress = { (option.votes.toFloat() / denominator.toFloat()).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                )
+            }
+        }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(stringResource(R.string.poll_votes_summary, summaryCount), style = MaterialTheme.typography.labelSmall)
+        when {
+            poll.multipleChoice && !anyChosen && !poll.closed -> {
+                Button(
+                    onClick = { onSubmitMultiple(multiDraft.toList()) },
+                    enabled = multiDraft.isNotEmpty(),
+                ) {
+                    Text(stringResource(R.string.poll_submit_vote))
+                }
+            }
+            anyChosen && !poll.closed -> {
+                TextButton(onClick = onRetract) {
+                    Text(stringResource(R.string.poll_retract_vote))
                 }
             }
         }
