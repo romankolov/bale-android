@@ -293,7 +293,8 @@ class MessengerRepositoryTest {
         assertEquals(777L, uploadReq.uid)
         assertEquals(3, uploadReq.exPeer.type)
         val sentDocReq = rpc.requests.last { it.first == "SendMessage" }.second as Messaging_SendMessage_Request
-        assertEquals(3, sentDocReq.peer.type)
+        assertEquals(2, sentDocReq.peer.type)
+        assertEquals(3, sentDocReq.exPeer.type)
         assertEquals(777L, sentDocReq.message.documentMessage.accessHash)
 
         // 2. Live socket forwarded message unwraps emptyMessage into real supported ChatMessage
