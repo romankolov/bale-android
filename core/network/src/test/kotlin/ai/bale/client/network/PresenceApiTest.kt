@@ -85,7 +85,7 @@ class PresenceApiTest {
         val api = PresenceApi(rpc)
         assertEquals(12, api.groupOnlineCount(99, 555L))
         val request = rpc.calls.single().third as Presence_GetGroupOnlineCount_Request
-        assertEquals(GroupPeer.newBuilder().setGroupId(99).setAccessHash(555L).build(), request.group)
+        assertEquals(GroupPeer.newBuilder().setGroupId(99).setAccessHash(555L).build(), request.peer)
     }
 
     @Test fun `userPeer builds a keyed user peer and skips account zero`() {

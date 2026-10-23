@@ -49,7 +49,7 @@ class PresenceApi(private val rpc: BaleRpc, private val session: Long = rpc.sess
             call(
                 "GetGroupOnlineCount",
                 Presence_GetGroupOnlineCount_Request.newBuilder()
-                    .setGroup(GroupPeer.newBuilder().setGroupId(groupId).setAccessHash(accessHash).build())
+                    .setPeer(GroupPeer.newBuilder().setGroupId(groupId).setAccessHash(accessHash).build())
                     .build(),
             ),
         ).count

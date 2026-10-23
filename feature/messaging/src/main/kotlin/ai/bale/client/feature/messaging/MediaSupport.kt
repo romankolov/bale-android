@@ -192,7 +192,7 @@ internal class VoiceNoteRecorder(private val context: Context) {
         val file = fallbackFile ?: return null
         fallback = null
         fallbackFile = null
-        val stopped = runCatching { recorder.stop() }.getOrDefault(false)
+        val stopped = runCatching { recorder.stop(); true }.getOrDefault(false)
         runCatching { recorder.release() }
         if (!stopped || !file.isFile || file.length() <= 0L) {
             file.delete()
@@ -409,7 +409,8 @@ internal object OggOpusWriter {
         IntArray(256) { index ->
             var remainder = index shl 24
             repeat(8) {
-                remainder = if (remainder and 0x8000_0000 != 0) (remainder shl 1) xor 0x04c1_1db7 else remainder shl 1
+                // The sign bit doubles as the x8000_0000 mask; 0x8000_0000 itself overflows Int.
+                remainder = if (remainder < 0) (remainder shl 1) xor 0x04c1_1db7 else remainder shl 1
             }
             remainder
         }
