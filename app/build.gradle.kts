@@ -12,8 +12,8 @@ android {
         applicationId = "ai.bale.client"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-dev"
+        versionCode = 2
+        versionName = "1.0.0-rc1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }
@@ -26,6 +26,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Release-candidate artifacts must be installable next to the debug build, so the
+            // CI release APK is signed with the standard debug key. Play signing replaces it.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     lint {

@@ -178,6 +178,28 @@ internal fun StoriesPane(
 }
 
 @Composable
+private fun AppThemeMode.labelRes(): Int = when (this) {
+    AppThemeMode.System -> R.string.theme_system
+    AppThemeMode.Light -> R.string.theme_light
+    AppThemeMode.Dark -> R.string.theme_dark
+}
+
+@Composable
+private fun AppLanguage.labelRes(): Int = when (this) {
+    AppLanguage.System -> R.string.language_system
+    AppLanguage.English -> R.string.language_english
+    AppLanguage.Persian -> R.string.language_persian
+}
+
+@Composable
+private fun privacyLabel(value: Int?): String = when (value) {
+    1 -> stringResource(R.string.privacy_everyone)
+    2 -> stringResource(R.string.privacy_contacts)
+    3 -> stringResource(R.string.privacy_nobody)
+    else -> stringResource(R.string.privacy_unknown)
+}
+
+@Composable
 internal fun SettingsPane(
     account: Account?,
     profile: PeerProfile?,
@@ -190,7 +212,22 @@ internal fun SettingsPane(
     onTerminateOtherSessions: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
+    preferences: ClientPreferences = ClientPreferences(),
+    security: SecurityAndPrivacyState? = null,
+    folders: List<ChatFolder> = emptyList(),
+    avatarPaths: Map<Long, String> = emptyMap(),
+    onThemeMode: (AppThemeMode) -> Unit = {},
+    onDynamicColor: (Boolean) -> Unit = {},
+    onLanguage: (AppLanguage) -> Unit = {},
+    onRefreshSecurity: () -> Unit = {},
+    onEnableTwoFactor: (String, String) -> Unit = { _, _ -> },
+    onDisableTwoFactor: () -> Unit = {},
+    onUnblock: (Peer) -> Unit = {},
+    onDeleteFolder: (Int) -> Unit = {},
+    onOpenSaved: () -> Unit = {},
 ) {
+    var twoFactorEmail by rememberSaveable { mutableStateOf("") }
+    var twoFactorPassword by rememberSaveable { mutableStateOf("") }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var name by remember(profile?.title, account?.name) { mutableStateOf(profile?.title ?: account?.name.orEmpty()) }
@@ -223,7 +260,10 @@ internal fun SettingsPane(
         item {
             Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(stringResource(R.string.profile_section), style = MaterialTheme.typography.titleMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        BaleAvatar(profile?.avatar, avatarPaths, profile?.title ?: account?.name.orEmpty(), size = 52.dp)
+                        Text(stringResource(R.string.profile_section), style = MaterialTheme.typography.titleMedium)
+                    }
                     OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.display_name)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(handle, { handle = it }, label = { Text(stringResource(R.string.username_label)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(about, { about = it }, label = { Text(stringResource(R.string.bio_label)) }, maxLines = 3, modifier = Modifier.fillMaxWidth())
@@ -271,6 +311,114 @@ internal fun SettingsPane(
                             }
                         }
                         HorizontalDivider()
+                    }
+                }
+            }
+        }
+        item {
+            Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.testTag("appearance_section")) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.appearance), style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.theme_label), style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        AppThemeMode.entries.forEach { mode ->
+                            AssistChip(
+                                onClick = { onThemeMode(mode) },
+                                label = { Text(stringResource(mode.labelRes())) },
+                                modifier = Modifier.testTag("theme_${mode.name.lowercase()}"),
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(preferences.dynamicColor, onDynamicColor)
+                        Text(stringResource(R.string.dynamic_color))
+                    }
+                    Text(stringResource(R.string.language_label), style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        AppLanguage.entries.forEach { language ->
+                            AssistChip(
+                                onClick = { onLanguage(language) },
+                                label = { Text(stringResource(language.labelRes())) },
+                                modifier = Modifier.testTag("language_${language.name.lowercase()}"),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.testTag("security_section")) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.security_title), style = MaterialTheme.typography.titleMedium)
+                        TextButton(onClick = onRefreshSecurity, modifier = Modifier.testTag("security_refresh")) { Text(stringResource(R.string.refresh)) }
+                    }
+                    Text(
+                        stringResource(if (security?.twoFactorEnabled == true) R.string.two_factor_on else R.string.two_factor_off),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (security?.twoFactorEnabled == true) {
+                        OutlinedButton(onClick = onDisableTwoFactor, modifier = Modifier.testTag("two_factor_disable")) {
+                            Text(stringResource(R.string.two_factor_disable), color = MaterialTheme.colorScheme.error)
+                        }
+                    } else {
+                        OutlinedTextField(
+                            twoFactorEmail, { twoFactorEmail = it }, singleLine = true,
+                            label = { Text(stringResource(R.string.recovery_email)) }, modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            twoFactorPassword, { twoFactorPassword = it }, singleLine = true,
+                            label = { Text(stringResource(R.string.new_password)) }, modifier = Modifier.fillMaxWidth(),
+                        )
+                        Button(
+                            onClick = { onEnableTwoFactor(twoFactorEmail, twoFactorPassword) },
+                            enabled = twoFactorEmail.contains("@") && twoFactorPassword.length >= 4,
+                            modifier = Modifier.testTag("two_factor_enable"),
+                        ) { Text(stringResource(R.string.two_factor_enable)) }
+                    }
+                    HorizontalDivider()
+                    Text(stringResource(R.string.privacy_title), style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "${stringResource(R.string.privacy_invites)}: ${privacyLabel(security?.invitePrivacy)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "${stringResource(R.string.privacy_presence)}: ${privacyLabel(security?.presencePrivacy)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(stringResource(R.string.blocked_users), style = MaterialTheme.typography.titleSmall)
+                    val blocked = security?.blockedUsers.orEmpty()
+                    if (blocked.isEmpty()) {
+                        Text(stringResource(R.string.blocked_none), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    blocked.forEach { entry ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(entry.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            TextButton(onClick = { onUnblock(entry.peer) }) { Text(stringResource(R.string.unblock)) }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.testTag("folders_section")) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(stringResource(R.string.folders_title), style = MaterialTheme.typography.titleMedium)
+                    val userFolders = folders.filterNot { it.reserved }
+                    if (userFolders.isEmpty()) {
+                        Text(stringResource(R.string.picker_empty_stickers), style = MaterialTheme.typography.bodySmall)
+                    }
+                    userFolders.forEach { folder ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("${folder.name} · ${folder.peerKeys.size}", style = MaterialTheme.typography.bodyMedium)
+                            TextButton(onClick = { onDeleteFolder(folder.id) }) {
+                                Text(stringResource(R.string.folder_delete), color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                    OutlinedButton(onClick = onOpenSaved, modifier = Modifier.testTag("open_saved_from_settings")) {
+                        Text(stringResource(R.string.saved_messages))
                     }
                 }
             }
@@ -385,6 +533,21 @@ internal fun CreatePollDialog(
     )
 }
 
+private fun formatBytes(size: Int): String = when {
+    size <= 0 -> ""
+    size < 1024 -> "$size B"
+    size < 1024 * 1024 -> "${size / 1024} KB"
+    else -> "${size / (1024 * 1024)} MB"
+}
+
+@Composable
+private fun SharedMediaTab.labelRes(): Int = when (this) {
+    SharedMediaTab.Media -> R.string.shared_media_media
+    SharedMediaTab.Files -> R.string.shared_media_files
+    SharedMediaTab.Voice -> R.string.shared_media_voice
+    SharedMediaTab.Links -> R.string.shared_media_links
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PeerInspectorSheet(
@@ -404,9 +567,32 @@ internal fun PeerInspectorSheet(
     onKickMember: (Peer) -> Unit,
     onSetAdmin: (Peer, Boolean) -> Unit,
     onUnpinMessage: (ChatMessage) -> Unit,
+    sharedMedia: SharedMediaState = SharedMediaState(),
+    onOpenSharedMedia: () -> Unit = {},
+    onSelectSharedMediaTab: (SharedMediaTab) -> Unit = {},
+    onCloseSharedMedia: () -> Unit = {},
+    onOpenMedia: (ChatMessage) -> Unit = {},
+    onReportPeer: () -> Unit = {},
+    onUploadCommunityAvatar: (UploadPayload) -> Unit = {},
+    onUpdateHandle: (String) -> Unit = {},
+    onCheckHandle: (String) -> Unit = {},
+    handleAvailable: Boolean? = null,
+    avatars: Map<Long, String> = emptyMap(),
+    pinned: Boolean = false,
+    muted: Boolean = false,
+    onTogglePin: () -> Unit = {},
+    onToggleMute: () -> Unit = {},
 ) {
+    val context = LocalContext.current
+    var handleDraft by remember(profile.peer.key, profile.handle) { mutableStateOf(profile.handle) }
+    val communityAvatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            runCatching { readPickedUri(context, uri, forcePhotoOrVideo = true) }.onSuccess(onUploadCommunityAvatar)
+        }
+    }
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var editTitle by remember(profile.peer.key, profile.title) { mutableStateOf(profile.title) }
     var editAbout by remember(profile.peer.key, profile.about) { mutableStateOf(profile.about) }
 
@@ -417,7 +603,10 @@ internal fun PeerInspectorSheet(
             contentPadding = PaddingValues(bottom = 28.dp),
         ) {
             item {
-                Text(profile.title, style = MaterialTheme.typography.headlineSmall)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    BaleAvatar(profile.avatar, avatars, profile.title, size = 44.dp)
+                    Text(profile.title, style = MaterialTheme.typography.headlineSmall)
+                }
                 if (profile.handle.isNotBlank()) Text("@${profile.handle}", color = MaterialTheme.colorScheme.primary)
                 if (profile.about.isNotBlank()) Text(profile.about, style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -429,6 +618,115 @@ internal fun PeerInspectorSheet(
                 if (!profile.isGroup) {
                     OutlinedButton(onClick = { onSetBlocked(!profile.isBlocked) }) {
                         Text(stringResource(if (profile.isBlocked) R.string.unblock_user else R.string.block_user))
+                    }
+                }
+            }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    BaleAvatar(profile.avatar, avatars, profile.title, size = 56.dp)
+                    Column(Modifier.weight(1f)) {
+                        Text(stringResource(R.string.shared_media), style = MaterialTheme.typography.titleMedium)
+                        if (profile.membersCount > 0) Text(stringResource(R.string.members_count, profile.membersCount), style = MaterialTheme.typography.labelSmall)
+                    }
+                    if (profile.isGroup && profile.isOwner) {
+                        OutlinedButton(onClick = { communityAvatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, modifier = Modifier.testTag("upload_group_avatar")) {
+                            Text(stringResource(R.string.upload_group_avatar))
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(onClick = onTogglePin, modifier = Modifier.testTag("inspector_pin")) {
+                        Text(stringResource(if (pinned) R.string.unpin_chat else R.string.pin_chat))
+                    }
+                    TextButton(onClick = onToggleMute, modifier = Modifier.testTag("inspector_mute")) {
+                        Text(stringResource(if (muted) R.string.unmute_chat else R.string.mute_chat))
+                    }
+                    TextButton(onClick = { onOpenSharedMedia() }, modifier = Modifier.testTag("open_shared_media")) {
+                        Text(stringResource(R.string.load_shared_media))
+                    }
+                    TextButton(onClick = onReportPeer, modifier = Modifier.testTag("report_peer")) {
+                        Text(stringResource(R.string.report_chat), color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (profile.isChannel) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            handleDraft, { handleDraft = it; onCheckHandle(it) }, singleLine = true,
+                            label = { Text(stringResource(R.string.channel_handle)) },
+                            modifier = Modifier.weight(1f).testTag("handle_field"),
+                        )
+                        TextButton(onClick = { onUpdateHandle(handleDraft) }, modifier = Modifier.testTag("handle_save")) {
+                            Text(stringResource(R.string.update_handle))
+                        }
+                    }
+                    Text(
+                        stringResource(R.string.channel_handle_hint),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    handleAvailable?.let { free ->
+                        Text(
+                            stringResource(if (free) R.string.channel_handle_free else R.string.channel_handle_taken),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (free) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                            modifier = Modifier.testTag("handle_availability"),
+                        )
+                    }
+                }
+            }
+            if (sharedMedia.open) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SharedMediaTab.entries.forEach { tab ->
+                                AssistChip(
+                                    onClick = { onSelectSharedMediaTab(tab) },
+                                    label = { Text(stringResource(tab.labelRes())) },
+                                    modifier = Modifier.testTag("shared_tab_${tab.name.lowercase()}"),
+                                )
+                            }
+                            TextButton(onClick = onCloseSharedMedia) { Text(stringResource(R.string.close_panel)) }
+                        }
+                        if (sharedMedia.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        if (sharedMedia.failed) Text(stringResource(R.string.shared_media_empty), style = MaterialTheme.typography.bodySmall)
+                        if (!sharedMedia.busy && sharedMedia.items.isEmpty()) {
+                            Text(stringResource(R.string.shared_media_empty), style = MaterialTheme.typography.bodySmall)
+                        }
+                        sharedMedia.items.take(24).forEach { media ->
+                            Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
+                                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(media.text.ifBlank { media.attachment?.name.orEmpty() }, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(formatBytes(media.attachment?.sizeBytes ?: 0), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    if (media.attachment != null) {
+                                        TextButton(onClick = { onOpenMedia(media) }, modifier = Modifier.testTag("shared_media_open_${media.rid}")) {
+                                            Text(stringResource(R.string.media_viewer))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (profile.botCommands.isNotEmpty()) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(stringResource(R.string.bot_commands_title), style = MaterialTheme.typography.titleMedium)
+                        profile.botCommands.forEach { command ->
+                            Text("/${command.command} — ${command.description}", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+            if (profile.bannedMembers.isNotEmpty()) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(stringResource(R.string.banned_members_title), style = MaterialTheme.typography.titleMedium)
+                        profile.bannedMembers.forEach { banned ->
+                            Text(banned.name, style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
                 }
             }

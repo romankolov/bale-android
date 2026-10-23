@@ -8,7 +8,7 @@ import com.google.protobuf.BoolValue
 import com.google.protobuf.MessageLite
 import com.google.protobuf.StringValue
 
-/** Contacts, profiles, groups/channels, stories and active-session RPCs. */
+/** Contacts, profiles, groups/channels, stories, privacy, and active-session RPCs. */
 class DirectoryApi(private val rpc: BaleRpc, private val session: Long = rpc.sessionId) {
     private suspend fun call(service: String, method: String, request: MessageLite): ByteArray =
         rpc.rpc(service, method, request, session)
@@ -35,9 +35,20 @@ class DirectoryApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         else call(USERS, "UnblockUser", Users_UnblockUser_Request.newBuilder().setPeer(target).build())
     }
 
+    suspend fun blockedUsers(): List<UserPeers> =
+        Users_LoadBlockedUsers_Response.parseFrom(call(USERS, "LoadBlockedUsers", Users_LoadBlockedUsers_Request.getDefaultInstance())).userPeersList
+
     suspend fun fullUser(peer: Peer): FullUser =
         Users_GetFullUser_Response.parseFrom(call(USERS, "GetFullUser",
             Users_GetFullUser_Request.newBuilder().setPeer(UserPeers.newBuilder().setUid(peer.id).setAccessHash(peer.accessHash)).build())).fullUser
+
+    suspend fun checkNickName(handle: String): Boolean {
+        val clean = handle.trim().removePrefix("@")
+        if (clean.isBlank()) return true
+        return BoolValue.parseFrom(
+            call(USERS, "CheckNickName", Users_CheckNickName_Request.newBuilder().setNickname(clean).build()),
+        ).value
+    }
 
     suspend fun editProfile(name: String, handle: String, about: String) {
         if (name.isNotBlank()) call(USERS, "EditName", Users_EditName_Request.newBuilder().setName(name.trim()).build())
@@ -50,6 +61,12 @@ class DirectoryApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
             .setFileLocation(FileLocation.newBuilder().setFileId(fileId).setAccessHash(accessHash)).build())
     }
 
+    /** Privacy rules are read-only here: the recovered write RPC has no documented type mapping. */
+    suspend fun userPrivacy(userId: Int): Privacy =
+        Users_GetUserFullPrivacy_Response.parseFrom(
+            call(USERS, "GetUserFullPrivacy", Users_GetUserFullPrivacy_Request.newBuilder().setUserId(userId).build()),
+        ).privacy
+
     // --- Groups & Channels ---
     suspend fun fullGroup(peer: Peer): FullGroup =
         Groups_GetFullGroup_Response.parseFrom(call(GROUPS, "GetFullGroup",
@@ -58,6 +75,16 @@ class DirectoryApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
     suspend fun members(peer: Peer, limit: Int = 100): List<Members> =
         Groups_LoadMembers_Response.parseFrom(call(GROUPS, "LoadMembers",
             Groups_LoadMembers_Request.newBuilder().setGroup(groupPeer(peer)).setLimit(limit).build())).membersList
+
+    suspend fun groupAdmins(peer: Peer): Groups_FetchGroupAdmins_Response =
+        Groups_FetchGroupAdmins_Response.parseFrom(
+            call(GROUPS, "FetchGroupAdmins", Groups_FetchGroupAdmins_Request.newBuilder().setGroupOutPeer(groupPeer(peer)).build()),
+        )
+
+    suspend fun bannedUsers(peer: Peer): List<BannedUsers> =
+        Groups_GetBannedUsers_Response.parseFrom(
+            call(GROUPS, "GetBannedUsers", Groups_GetBannedUsers_Request.newBuilder().setGroup(groupPeer(peer)).build()),
+        ).bannedUsersList
 
     suspend fun createCommunity(rid: Long, title: String, isChannel: Boolean, handle: String, members: List<Peer>): Groups2 {
         val req = Groups_CreateGroup_Request.newBuilder()
@@ -78,6 +105,30 @@ class DirectoryApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         }
         call(GROUPS, "EditGroupAbout", Groups_EditGroupAbout_Request.newBuilder()
             .setGroupPeer(groupPeer(peer)).setRid(rid + 1).setAbout(StringValue.of(about.trim())).build())
+    }
+
+    suspend fun editGroupAvatar(peer: Peer, rid: Long, fileId: Long, accessHash: Long) {
+        call(
+            GROUPS,
+            "EditGroupAvatar",
+            Groups_EditGroupAvatar_Request.newBuilder()
+                .setGroupPeer(groupPeer(peer))
+                .setRid(rid)
+                .setFileLocation(FileLocation.newBuilder().setFileId(fileId).setAccessHash(accessHash))
+                .build(),
+        )
+    }
+
+    suspend fun editChannelNick(peer: Peer, rid: Long, handle: String) {
+        call(
+            GROUPS,
+            "EditChannelNick",
+            Groups_EditChannelNick_Request.newBuilder()
+                .setGroupPeer(groupPeer(peer))
+                .setNick(handle.trim().removePrefix("@"))
+                .setRandomId(rid)
+                .build(),
+        )
     }
 
     suspend fun inviteUrl(peer: Peer): String =
@@ -146,7 +197,7 @@ class DirectoryApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         call(STORY, "RemoveStory", Story_RemoveStory_Request.newBuilder().setStoryId(storyId).build())
     }
 
-    // --- Active Sessions & Remote Logout ---
+    // --- Active Sessions, Two-Factor Auth & Remote Logout ---
     suspend fun authSessions(): List<UserAuths> =
         Auth_GetAuthSessions_Response.parseFrom(call(AUTH, "GetAuthSessions", Auth_GetAuthSessions_Request.getDefaultInstance())).userAuthsList
 
@@ -156,6 +207,23 @@ class DirectoryApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
 
     suspend fun terminateAllSessions() {
         call(AUTH, "TerminateAllSessions", Auth_TerminateAllSessions_Request.getDefaultInstance())
+    }
+
+    suspend fun isTwoFactorEnabled(): Boolean =
+        Auth_IsTwoFactorAuthenticationEnabled_Response.parseFrom(
+            call(AUTH, "IsTwoFactorAuthenticationEnabled", Auth_IsTwoFactorAuthenticationEnabled_Request.getDefaultInstance()),
+        ).isEnabled
+
+    suspend fun enableTwoFactor(email: String, password: String) {
+        call(
+            AUTH,
+            "EnableTwoFactorAuthentication",
+            Auth_EnableTwoFactorAuthentication_Request.newBuilder().setEmail(email.trim()).setPassword(password).build(),
+        )
+    }
+
+    suspend fun disableTwoFactor() {
+        call(AUTH, "DisableTwoFactorAuthentication", Auth_DisableTwoFactorAuthentication_Request.getDefaultInstance())
     }
 
     suspend fun remoteSignOut() {

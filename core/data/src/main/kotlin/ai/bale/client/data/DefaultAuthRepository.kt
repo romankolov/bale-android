@@ -3,14 +3,14 @@ package ai.bale.client.data
 import ai.bale.client.domain.*
 import ai.bale.client.network.*
 import ai.bale.client.protocol.*
+import android.util.Base64
 import com.google.protobuf.BoolValue
 import com.google.protobuf.ByteString
-import android.util.Base64
-import org.json.JSONObject
-import java.io.File
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
+import java.io.File
 
 internal class DefaultAuthRepository(
     private val vault: SessionVault,
@@ -150,6 +150,31 @@ internal class DefaultAuthRepository(
             DirectoryApi(socket, socket.sessionId)
         }
         api.terminateAllSessions()
+    }
+
+    override suspend fun isTwoFactorEnabled(): Boolean {
+        val api = lock.withLock {
+            if (session == null) return false
+            DirectoryApi(socket, socket.sessionId)
+        }
+        return api.isTwoFactorEnabled()
+    }
+
+    override suspend fun enableTwoFactor(email: String, password: String) {
+        require(email.contains('@') && password.length >= 4) { "Enter a valid recovery email and password" }
+        val api = lock.withLock {
+            if (session == null) return
+            DirectoryApi(socket, socket.sessionId)
+        }
+        api.enableTwoFactor(email, password)
+    }
+
+    override suspend fun disableTwoFactor() {
+        val api = lock.withLock {
+            if (session == null) return
+            DirectoryApi(socket, socket.sessionId)
+        }
+        api.disableTwoFactor()
     }
 
     override suspend fun signOut(): Unit = lock.withLock {

@@ -2883,9 +2883,9 @@ message ChatShow {
 message Collections {
   int32 id = 1;
   int64 accessHash = 2;
-  Field265 field_26 = 3;
+  repeated Field265 stickers = 3;
   google.protobuf.BoolValue animated = 4;
-  Field422 field_42 = 5;
+  repeated Field422 stickersV2 = 5;
   google.protobuf.StringValue name = 6;
 }
 

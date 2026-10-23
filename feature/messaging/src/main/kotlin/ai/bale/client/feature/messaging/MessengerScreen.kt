@@ -1,6 +1,7 @@
 package ai.bale.client.feature.messaging
 
 import ai.bale.client.core.designsystem.R
+import ai.bale.client.designsystem.AppLocaleStore
 import ai.bale.client.designsystem.Notice
 import ai.bale.client.domain.*
 import android.Manifest
@@ -59,7 +60,6 @@ import kotlin.math.roundToInt
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
-    val chats by viewModel.filtered.collectAsStateWithLifecycle()
     val allChats by viewModel.conversations.collectAsStateWithLifecycle()
     val section by viewModel.section.collectAsStateWithLifecycle()
     val selected by viewModel.selected.collectAsStateWithLifecycle()
@@ -84,8 +84,27 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     val ownProfile by viewModel.ownProfile.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val inspected by viewModel.inspectedProfile.collectAsStateWithLifecycle()
+    val avatarPaths by viewModel.avatarPaths.collectAsStateWithLifecycle()
+    val chatFolders by viewModel.folders.collectAsStateWithLifecycle()
+    val dialogFilter by viewModel.dialogFilter.collectAsStateWithLifecycle()
+    val folderFilter by viewModel.folderFilter.collectAsStateWithLifecycle()
+    val viewer by viewModel.viewer.collectAsStateWithLifecycle()
+    val picker by viewModel.picker.collectAsStateWithLifecycle()
+    val threadState by viewModel.thread.collectAsStateWithLifecycle()
+    val scheduleState by viewModel.schedule.collectAsStateWithLifecycle()
+    val miniApp by viewModel.miniApp.collectAsStateWithLifecycle()
+    val linkPreview by viewModel.linkPreview.collectAsStateWithLifecycle()
+    val voters by viewModel.voters.collectAsStateWithLifecycle()
+    val reportTarget by viewModel.reportTarget.collectAsStateWithLifecycle()
+    val security by viewModel.security.collectAsStateWithLifecycle()
+    val sharedMedia by viewModel.sharedMedia.collectAsStateWithLifecycle()
+    val preferences by viewModel.preferences.collectAsStateWithLifecycle()
+    val handleAvailable by viewModel.handleAvailable.collectAsStateWithLifecycle()
+    val chats by viewModel.visibleChats.collectAsStateWithLifecycle()
 
     var confirmLogout by remember { mutableStateOf(false) }
+    var chatActions by remember { mutableStateOf<Conversation?>(null) }
+    var reportConversation by remember { mutableStateOf(false) }
     var showNewCommunity by remember { mutableStateOf(false) }
     var showCreatePoll by remember(selected?.key) { mutableStateOf(false) }
     var action by remember(selected?.key, account?.id) { mutableStateOf<ChatMessage?>(null) }
@@ -157,6 +176,21 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
             onKickMember = { viewModel.kickMember(profile.peer, it) },
             onSetAdmin = { user, admin -> viewModel.setMemberAdmin(profile.peer, user, admin) },
             onUnpinMessage = { viewModel.pinMessage(it, false) },
+            sharedMedia = sharedMedia,
+            onOpenSharedMedia = viewModel::openSharedMedia,
+            onSelectSharedMediaTab = viewModel::selectSharedMediaTab,
+            onCloseSharedMedia = viewModel::closeSharedMedia,
+            onOpenMedia = { message -> viewModel.openViewer(message) },
+            onReportPeer = { reportConversation = true },
+            onUploadCommunityAvatar = viewModel::uploadCommunityAvatar,
+            onUpdateHandle = viewModel::updateCommunityHandle,
+            onCheckHandle = viewModel::checkCommunityHandle,
+            handleAvailable = handleAvailable,
+            avatars = avatarPaths,
+            pinned = allChats.firstOrNull { it.peer.key == profile.peer.key }?.pinned ?: false,
+            muted = allChats.firstOrNull { it.peer.key == profile.peer.key }?.muted ?: false,
+            onTogglePin = { viewModel.setDialogPinned(profile.peer, !(allChats.firstOrNull { it.peer.key == profile.peer.key }?.pinned ?: false)) },
+            onToggleMute = { viewModel.toggleMute(profile.peer) },
         )
     }
     action?.let { message ->
@@ -222,6 +256,62 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                 }
             }, confirmButton = { TextButton(onClick = { forwarding = null }) { Text(stringResource(R.string.cancel)) } })
     }
+    viewer?.let { state ->
+        MediaViewerOverlay(
+            state = state,
+            onDismiss = viewModel::closeViewer,
+            onOpenExternally = {
+                openExternallyOrWarn(context, state.path, state.message.attachment?.mimeType.orEmpty(), viewModel::reportOperationError)
+            },
+            onTranscribe = viewModel::transcribeVoiceInViewer,
+            onSaveGif = viewModel::saveViewerGif,
+        )
+    }
+    if (picker.mode != null) {
+        PickerOverlay(
+            state = picker,
+            onMode = viewModel::openPicker,
+            onSendSticker = viewModel::sendSticker,
+            onSendGif = viewModel::sendGif,
+            onRemoveGif = viewModel::removeGif,
+            onDismiss = viewModel::closePicker,
+        )
+    }
+    threadState?.let { state ->
+        ThreadOverlay(state = state, meId = account?.id, onSend = viewModel::sendThreadReply, onDismiss = viewModel::closeThread)
+    }
+    voters?.let { state -> VotersOverlay(state = state, onDismiss = viewModel::closeVoters) }
+    miniApp?.let { state ->
+        MiniAppOverlay(state = state, onSubmitQuery = viewModel::submitMiniAppQuery, onDismiss = viewModel::closeMiniApp)
+    }
+    if (reportConversation) {
+        ReportSheet(
+            isMessage = false,
+            onSubmit = { reason -> reportConversation = false; viewModel.reportConversation(reason) },
+            onDismiss = { reportConversation = false },
+        )
+    }
+    reportTarget?.let { message ->
+        ReportSheet(
+            isMessage = true,
+            onSubmit = { reason -> viewModel.reportMessageFor(message, reason); viewModel.dismissReport() },
+            onDismiss = { viewModel.dismissReport() },
+        )
+    }
+    chatActions?.let { chat ->
+        ChatActionSheet(
+            conversation = chat,
+            onDismiss = { chatActions = null },
+            onPin = { viewModel.setDialogPinned(chat.peer, !chat.pinned) },
+            onMute = { viewModel.toggleMute(chat.peer) },
+            onUnread = { viewModel.toggleMarkedUnread(chat.peer) },
+            onArchive = { viewModel.setDialogArchived(chat.peer, !chat.archived) },
+            onReport = { chatActions = null; viewModel.reportMessage(null); reportConversation = true },
+            onFolder = { folderId -> viewModel.assignChatToFolder(chat.peer, folderId) },
+            folders = chatFolders,
+        )
+    }
+
     if (search.open) SearchDialog(search, selected != null, viewModel::searchServer, viewModel::closeSearch, viewModel::openSearchHit)
 
     Surface(Modifier.fillMaxSize()) {
@@ -246,7 +336,18 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                     when (section) {
                         AppSection.Chats -> {
                             if (expanded || selected == null) ConversationList(
+                                onlineIds = onlineUsers,
                                 chats = chats,
+                                avatars = avatarPaths,
+                                filter = dialogFilter,
+                                folderId = folderFilter,
+                                folders = chatFolders,
+                                onFilter = viewModel::setDialogFilter,
+                                onFolder = viewModel::selectFolder,
+                                onCreateFolder = viewModel::createFolder,
+                                onDeleteFolder = viewModel::deleteFolder,
+                                onOpenSaved = viewModel::openSavedMessages,
+                                onActions = { chatActions = it },
                                 query = query,
                                 connection = connection,
                                 selectedKey = selected?.key,
@@ -341,8 +442,27 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                                     onActions = { action = it },
                                     onReaction = { m, code, mine -> viewModel.react(m, code, mine) },
                                     onCancelComposer = viewModel::cancelComposer,
-                                    onDraftChanged = viewModel::draftChanged,
+                                    onDraftChanged = { viewModel.draftChanged(it); viewModel.persistDraft(peer, it) },
                                     onSearch = viewModel::openSearch,
+                                    avatars = avatarPaths,
+                                    savedDraft = allChats.firstOrNull { it.peer.key == peer.key }?.draft.orEmpty(),
+                                    schedule = scheduleState,
+                                    preview = linkPreview,
+                                    isBotPeer = allChats.firstOrNull { it.peer.key == peer.key }?.isBot == true,
+                                    onSchedule = { minutes -> viewModel.scheduleMessage(peer, minutes) },
+                                    onOpenScheduled = viewModel::openScheduledList,
+                                    onDismissSchedule = { viewModel.closeScheduleComposer(); viewModel.closeScheduledList() },
+                                    onSendNow = viewModel::sendScheduledNow,
+                                    onCancelScheduled = viewModel::cancelScheduled,
+                                    onPreviewLink = { url, withSummary -> viewModel.previewLink(url, withSummary) },
+                                    onDismissPreview = viewModel::clearLinkPreview,
+                                    onOpenStickers = { viewModel.openPicker(PickerMode.Stickers) },
+                                    onOpenGifs = { viewModel.openPicker(PickerMode.Gifs) },
+                                    onOpenThread = viewModel::openThread,
+                                    onOpenMedia = viewModel::openViewer,
+                                    onBotMenu = viewModel::openMiniApp,
+                                    onShowPollVoters = viewModel::showPollVoters,
+                                    onShowReactionVoters = viewModel::showReactionVoters,
                                     modifier = Modifier.weight(1f),
                                 )
                             } else if (expanded) {
@@ -375,6 +495,23 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                             account = account,
                             profile = ownProfile,
                             sessions = sessions,
+                            preferences = preferences,
+                            security = security,
+                            folders = chatFolders,
+                            avatarPaths = avatarPaths,
+                            onThemeMode = viewModel::setThemeMode,
+                            onDynamicColor = viewModel::setDynamicColor,
+                            onLanguage = { language ->
+                                viewModel.setLanguage(language)
+                                AppLocaleStore.setTag(context, language.tag)
+                                (context as? android.app.Activity)?.recreate()
+                            },
+                            onRefreshSecurity = viewModel::refreshSecurity,
+                            onEnableTwoFactor = viewModel::enableTwoFactor,
+                            onDisableTwoFactor = viewModel::disableTwoFactor,
+                            onUnblock = { viewModel.setBlocked(it, false) },
+                            onDeleteFolder = viewModel::deleteFolder,
+                            onOpenSaved = viewModel::openSavedMessages,
                             onRefresh = { viewModel.refreshSettings() },
                             onSaveProfile = viewModel::saveOwnProfile,
                             onUploadAvatar = viewModel::uploadOwnAvatar,
@@ -417,9 +554,20 @@ private fun SectionItems(): List<Pair<AppSection, String>> = listOf(
 
 @Composable
 private fun ConversationList(
+    onlineIds: Set<Int> = emptySet(),
     chats: List<Conversation>, query: String, connection: Connection, selectedKey: String?, more: Boolean,
     onQuery: (String) -> Unit, onOpen: (Peer) -> Unit, onRefresh: () -> Unit, onMore: () -> Unit,
     onSearch: () -> Unit, onNewCommunity: () -> Unit, onLogout: () -> Unit, modifier: Modifier,
+    avatars: Map<Long, String> = emptyMap(),
+    filter: DialogFilter = DialogFilter.All,
+    onFilter: (DialogFilter) -> Unit = {},
+    folders: List<ChatFolder> = emptyList(),
+    folderId: Int = 0,
+    onFolder: (Int) -> Unit = {},
+    onCreateFolder: (String) -> Unit = {},
+    onDeleteFolder: (Int) -> Unit = {},
+    onOpenSaved: () -> Unit = {},
+    onActions: (Conversation) -> Unit = {},
 ) {
     Column(modifier.fillMaxHeight()) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -436,25 +584,61 @@ private fun ConversationList(
                 TextButton(onClick = onSearch) { Text(stringResource(R.string.search_messages)) }
                 TextButton(onClick = onNewCommunity) { Text(stringResource(R.string.new_community)) }
             }
-            TextButton(onClick = onLogout) { Text(stringResource(R.string.logout)) }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onOpenSaved, modifier = Modifier.testTag("open_saved_messages")) { Text(stringResource(R.string.saved_messages)) }
+                TextButton(onClick = onLogout) { Text(stringResource(R.string.logout)) }
+            }
             OutlinedTextField(query, onQuery, modifier = Modifier.fillMaxWidth(), singleLine = true,
                 label = { Text(stringResource(R.string.search_chats)) }, shape = RoundedCornerShape(24.dp))
+            DialogFilterStrip(
+                filter = filter,
+                onFilter = onFilter,
+                folders = folders,
+                folderId = folderId,
+                onFolder = onFolder,
+                onCreateFolder = onCreateFolder,
+                onDeleteFolder = onDeleteFolder,
+            )
         }
-        if (chats.isEmpty()) Text(stringResource(R.string.no_chats), Modifier.padding(24.dp))
+        if (chats.isEmpty()) Text(
+            stringResource(if (folderId != 0 || filter != DialogFilter.All) R.string.no_filtered_chats else R.string.no_chats),
+            Modifier.padding(24.dp),
+            modifier = Modifier.testTag("empty_chat_list"),
+        )
         LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(chats, key = { it.peer.key }) { chat ->
-                Surface(onClick = { onOpen(chat.peer) }, shape = RoundedCornerShape(26.dp), color =
-                    if (chat.peer.key == selectedKey) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow) {
+                Surface(
+                    shape = RoundedCornerShape(26.dp),
+                    color = if (chat.peer.key == selectedKey) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.testTag("conversation_${chat.peer.key}")
+                        .combinedClickable(onClick = { onOpen(chat.peer) }, onLongClick = { onActions(chat) }),
+                ) {
                     Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Surface(Modifier.size(48.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                            Box(contentAlignment = Alignment.Center) { Text(chat.title.take(1), style = MaterialTheme.typography.titleLarge) }
-                        }
+                        BaleAvatar(avatar = chat.avatar, paths = avatars, label = chat.title, size = 48.dp, online = chat.peer.kind == 1 && chat.peer.id in onlineIds)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(chat.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(chat.preview.ifBlank { stringResource(R.string.unsupported_message) }, style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(chat.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (chat.pinned) Text("📌", style = MaterialTheme.typography.labelSmall)
+                                if (chat.muted) Text("🔕", style = MaterialTheme.typography.labelSmall)
+                                if (chat.markedUnread) Text("•", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Text(
+                                if (chat.draft.isNotBlank()) stringResource(R.string.draft_prefix, chat.draft)
+                                else chat.preview.ifBlank { stringResource(R.string.unsupported_message) },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (chat.draft.isNotBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
-                        if (chat.unread > 0) Badge { Text(stringResource(R.string.unread_count, chat.unread)) }
+                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (chat.unread > 0) Badge { Text(stringResource(R.string.unread_count, chat.unread)) }
+                            if (chat.unreadMentions > 0) Text(
+                                stringResource(R.string.mentions_count, chat.unreadMentions),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
                 }
             }
@@ -485,10 +669,30 @@ private fun ChatPane(
     onRetry: (ChatMessage) -> Unit, onOlder: () -> Unit, onRead: (Long) -> Unit,
     onActions: (ChatMessage) -> Unit, onReaction: (ChatMessage, String, Boolean) -> Unit, onCancelComposer: () -> Unit,
     onDraftChanged: (String) -> Unit, onSearch: () -> Unit, modifier: Modifier,
+    avatars: Map<Long, String> = emptyMap(),
+    savedDraft: String = "",
+    schedule: ScheduleState = ScheduleState(),
+    preview: LinkPreviewState? = null,
+    isBotPeer: Boolean = false,
+    onOpenScheduleComposer: () -> Unit = {},
+    onSchedule: (Long) -> Unit = {},
+    onOpenScheduled: () -> Unit = {},
+    onDismissSchedule: () -> Unit = {},
+    onSendNow: (Long) -> Unit = {},
+    onCancelScheduled: (Long) -> Unit = {},
+    onPreviewLink: (String, Boolean) -> Unit = { _, _ -> },
+    onDismissPreview: () -> Unit = {},
+    onOpenStickers: () -> Unit = {},
+    onOpenGifs: () -> Unit = {},
+    onOpenThread: (ChatMessage) -> Unit = {},
+    onOpenMedia: (ChatMessage) -> Unit = {},
+    onBotMenu: () -> Unit = {},
+    onShowPollVoters: (ChatMessage) -> Unit = {},
+    onShowReactionVoters: (ChatMessage) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var draft by rememberSaveable(peer.key) { mutableStateOf("") }
+    var draft by rememberSaveable(peer.key) { mutableStateOf(savedDraft) }
     var editingDraft by remember(composer.edit?.rid) { mutableStateOf(composer.edit?.text.orEmpty()) }
     val listState = rememberLazyListState()
     var followNewest by remember { mutableStateOf(true) }
@@ -571,8 +775,12 @@ private fun ChatPane(
                     peerOnline -> Text(stringResource(R.string.online_status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 }
             }
-            TextButton(onClick = onInspect) { Text(stringResource(R.string.chat_info)) }
+            TextButton(onClick = onInspect, modifier = Modifier.testTag("chat_info_button")) { Text(stringResource(R.string.chat_info)) }
             TextButton(onClick = onSearch) { Text(stringResource(R.string.search_messages)) }
+            TextButton(onClick = onOpenScheduled, modifier = Modifier.testTag("scheduled_list")) { Text(stringResource(R.string.scheduled_messages)) }
+            if (isBotPeer) {
+                TextButton(onClick = onBotMenu, modifier = Modifier.testTag("bot_menu_button")) { Text(stringResource(R.string.open_bot_menu)) }
+            }
         }
         HorizontalDivider()
         if (messages.itemCount == 0 && messages.loadState.refresh !is LoadState.Loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -594,6 +802,11 @@ private fun ChatPane(
                         onSubmitPollSelection = onSubmitPollSelection,
                         onRetractPollVote = onRetractPollVote,
                         onBotButton = onBotButton,
+                        avatars = avatars,
+                        onOpenMedia = onOpenMedia,
+                        onOpenThread = onOpenThread,
+                        onShowPollVoters = onShowPollVoters,
+                        onShowReactionVoters = onShowReactionVoters,
                     )
                 }
             }
@@ -651,6 +864,15 @@ private fun ChatPane(
                         showAttachBar = false
                         onOpenPollDialog()
                     }) { Text(stringResource(R.string.poll_short)) }
+                    TextButton(onClick = { showAttachBar = false; onOpenStickers() }, modifier = Modifier.testTag("attach_stickers")) {
+                        Text(stringResource(R.string.picker_stickers))
+                    }
+                    TextButton(onClick = { showAttachBar = false; onOpenGifs() }, modifier = Modifier.testTag("attach_gifs")) {
+                        Text(stringResource(R.string.picker_gifs))
+                    }
+                    TextButton(onClick = { showAttachBar = false; onOpenScheduleComposer() }, modifier = Modifier.testTag("attach_schedule")) {
+                        Text(stringResource(R.string.schedule_title))
+                    }
                     TextButton(onClick = {
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             onStartVoice()
@@ -660,6 +882,30 @@ private fun ChatPane(
                     }) { Text(stringResource(R.string.record_voice)) }
                 }
             }
+        }
+        val linkedUrl = firstUrlIn(input)
+        if (linkedUrl != null && preview == null) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(onClick = { onPreviewLink(linkedUrl, false) }, modifier = Modifier.testTag("link_preview_button")) {
+                    Text(stringResource(R.string.preview_link))
+                }
+            }
+        }
+        LinkPreviewCard(
+            state = preview,
+            onToggleSummary = { withSummary -> onPreviewLink(preview?.url ?: linkedUrl.orEmpty(), withSummary) },
+            onDismiss = onDismissPreview,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        if (schedule.open || schedule.composing) {
+            ScheduleOverlay(
+                state = schedule,
+                hasDraft = input.isNotBlank(),
+                onPick = { minutes -> onSchedule(minutes) },
+                onSendNow = onSendNow,
+                onCancel = onCancelScheduled,
+                onDismiss = onDismissSchedule,
+            )
         }
         val chatKeyboard = LocalSoftwareKeyboardController.current
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
@@ -705,6 +951,11 @@ private fun MessageBubble(
     onSubmitPollSelection: (ChatMessage, List<Int>) -> Unit,
     onRetractPollVote: (ChatMessage) -> Unit,
     onBotButton: (BotButton) -> Unit,
+    avatars: Map<Long, String> = emptyMap(),
+    onOpenMedia: (ChatMessage) -> Unit = {},
+    onOpenThread: (ChatMessage) -> Unit = {},
+    onShowPollVoters: (ChatMessage) -> Unit = {},
+    onShowReactionVoters: (ChatMessage) -> Unit = {},
 ) {
     if (message.serviceNotice) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -719,7 +970,23 @@ private fun MessageBubble(
             modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth(0.88f)
                 .combinedClickable(onClick = { if (!message.deleted) onActions(message) }, onLongClick = { if (!message.deleted) onActions(message) })) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (!outgoing && group) Text(message.senderId.toString(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                if (!outgoing && group) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        BaleAvatar(
+                            avatar = message.senderAvatar,
+                            paths = avatars,
+                            label = message.senderName.ifBlank { message.senderId.toString() },
+                            size = 22.dp,
+                        )
+                        Text(
+                            message.senderName.ifBlank { message.senderId.toString() },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 message.forwardedFrom?.let { fwd ->
                     val originLabel = when {
                         fwd.authorName.isNotBlank() -> stringResource(R.string.forwarded_from_author, fwd.authorName)
@@ -748,7 +1015,8 @@ private fun MessageBubble(
                         Image(
                             bitmap = imagePreview,
                             contentDescription = att.name,
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp).clip(RoundedCornerShape(16.dp)),
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp).clip(RoundedCornerShape(16.dp))
+                                .clickable(onClick = { onOpenMedia(message) }).testTag("media_thumb_${message.rid}"),
                             contentScale = ContentScale.Crop,
                         )
                     }
@@ -790,6 +1058,21 @@ private fun MessageBubble(
                                 }
                             }
                         }
+                    }
+                }
+                if (message.repliesCount > 0) {
+                    TextButton(onClick = { onOpenThread(message) }, modifier = Modifier.testTag("thread_button_${message.rid}")) {
+                        Text(stringResource(R.string.thread_replies, message.repliesCount))
+                    }
+                }
+                if (message.poll != null && message.poll.totalVoters > 0) {
+                    TextButton(onClick = { onShowPollVoters(message) }, modifier = Modifier.testTag("poll_voters_${message.rid}")) {
+                        Text(stringResource(R.string.show_poll_voters))
+                    }
+                }
+                if (message.reactions.isNotEmpty()) {
+                    TextButton(onClick = { onShowReactionVoters(message) }, modifier = Modifier.testTag("reaction_voters_${message.rid}")) {
+                        Text(stringResource(R.string.show_reaction_voters))
                     }
                 }
                 Text(formatTime(message.date) + if (message.edited) " · " + stringResource(R.string.edited_message) else "", style = MaterialTheme.typography.labelSmall)

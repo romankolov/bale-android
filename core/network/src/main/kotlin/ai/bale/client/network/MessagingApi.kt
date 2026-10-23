@@ -7,7 +7,7 @@ import com.google.protobuf.BoolValue
 import com.google.protobuf.Int64Value
 import com.google.protobuf.MessageLite
 
-/** Typed service routing. No retries of non-idempotent operations at this layer. */
+/** Typed service routing for conversations, history, moderation and folder RPCs. */
 class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.sessionId) {
     private suspend fun call(service: String, method: String, request: MessageLite): ByteArray =
         rpc.rpc(service, method, request, session)
@@ -27,6 +27,7 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         content: Message2,
         reply: MessageReference?,
         exPeerType: Int = peer.kind,
+        threadId: MessageReference? = null,
     ): Msg_index_fe3fa18088__83329_h {
         val request = Messaging_SendMessage_Request.newBuilder()
             .setPeer(peer.wire())
@@ -34,6 +35,7 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
             .setRid(rid)
             .setMessage(content)
         if (reply != null) request.setQuotedMessageReference(reference(peer, reply))
+        if (threadId != null) request.setThreadId(messageId(threadId))
         return Msg_index_fe3fa18088__83329_h.parseFrom(call(MESSAGING, "SendMessage", request.build()))
     }
 
@@ -65,6 +67,23 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         return Msg_4825_fafe26abbf__79002_p.parseFrom(response).reactionsList
     }
 
+    /** Emoji reaction voters for one message (`Abacus/GetMessageReactionsList`). */
+    suspend fun reactionsFor(peer: Peer, message: MessageReference, code: String = "", limit: Int = 50): List<UserReactions> =
+        Abacus_GetMessageReactionsList_Response.parseFrom(
+            call(
+                ABACUS,
+                "GetMessageReactionsList",
+                Abacus_GetMessageReactionsList_Request.newBuilder()
+                    .setPeer(peer.wire())
+                    .setRid(message.rid)
+                    .setDate(message.date)
+                    .setCode(code)
+                    .setPage(1)
+                    .setLimit(limit)
+                    .build(),
+            ),
+        ).userReactionsList
+
     suspend fun search(query: String, peer: Peer?): Msg_modulesBuilder_e7b98d256c__62663_sr {
         val piece = Query2.newBuilder().setSearchPieceText(Query.newBuilder().setQuery(query)).build()
         val condition = if (peer == null) piece else Query2.newBuilder().setSearchAndCondition(
@@ -83,8 +102,120 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         call(MESSAGING, "MessageRead", Messaging_MessageRead_Request.newBuilder().setPeer(peer.wire()).setDate(date).build())
     }
 
+    suspend fun mentionRead(peer: Peer, message: MessageReference, exPeerType: Int = peer.kind) {
+        call(
+            MESSAGING,
+            "MentionRead",
+            Messaging_MentionRead_Request.newBuilder()
+                .setPeer(peer.exWire(exPeerType))
+                .setMessageId(messageId(message))
+                .build(),
+        )
+    }
+
+    /** Server-side unread flag (`MarkDialogsAsRead` / `MarkDialogsAsUnread`). */
+    suspend fun markDialogs(peers: List<Pair<Peer, Int>>, unread: Boolean) {
+        if (peers.isEmpty()) return
+        val exPeers = peers.map { (peer, exType) -> peer.exWire(exType) }
+        if (unread) {
+            call(MESSAGING, "MarkDialogsAsUnread", Messaging_MarkDialogsAsUnread_Request.newBuilder().addAllPeers(exPeers).build())
+        } else {
+            call(MESSAGING, "MarkDialogsAsRead", Messaging_MarkDialogsAsRead_Request.newBuilder().addAllPeers(exPeers).build())
+        }
+    }
+
+    // --- Chat folders ---
+    suspend fun loadFolders(): Messaging_LoadFolders_Response =
+        Messaging_LoadFolders_Response.parseFrom(
+            call(MESSAGING, "LoadFolders", Messaging_LoadFolders_Request.newBuilder().setIncludeMutedUnreadPeers(true).build()),
+        )
+
+    suspend fun createFolder(name: String): Int =
+        Messaging_CreateFolder_Response.parseFrom(
+            call(MESSAGING, "CreateFolder", Messaging_CreateFolder_Request.newBuilder().setName(name.trim()).build()),
+        ).folderId
+
+    /** `EditFolder` carries a single added peer per call, matching the recovered request shape. */
+    suspend fun addPeerToFolder(folderId: Int, name: String, peer: ExPeer) {
+        call(
+            MESSAGING,
+            "EditFolder",
+            Messaging_EditFolder_Request.newBuilder()
+                .setFolderId(folderId)
+                .setName(name)
+                .setField26(peer)
+                .build(),
+        )
+    }
+
+    suspend fun removePeersFromFolder(folderId: Int, name: String, peers: List<ExPeer>) {
+        call(
+            MESSAGING,
+            "EditFolder",
+            Messaging_EditFolder_Request.newBuilder()
+                .setFolderId(folderId)
+                .setName(name)
+                .addAllDeletedPeers(peers)
+                .build(),
+        )
+    }
+
+    suspend fun deleteFolder(folderId: Int) {
+        call(MESSAGING, "DeleteFolder", Messaging_DeleteFolder_Request.newBuilder().setFolderId(folderId).build())
+    }
+
+    suspend fun folderDialogs(folderId: Int = 0, archiveFilter: Int = 0, before: Long = -1): List<Dialogs> =
+        Messaging_LoadFolderDialogs_Response.parseFrom(
+            call(
+                MESSAGING,
+                "LoadFolderDialogs",
+                Messaging_LoadFolderDialogs_Request.newBuilder()
+                    .setMinDate(before)
+                    .setLimit(PAGE_SIZE)
+                    .setFolderId(folderId)
+                    .setArchiveFilter(archiveFilter)
+                    .build(),
+            ),
+        ).dialogsList
+
+    suspend fun pinnedDialogs(folderId: Int = 0): List<Dialogs> =
+        Messaging_LoadPinnedDialogs_Response.parseFrom(
+            call(MESSAGING, "LoadPinnedDialogs", Messaging_LoadPinnedDialogs_Request.newBuilder().setFolderId(folderId).build()),
+        ).dialogsList
+
+    // --- Threads and channel comments ---
+    suspend fun threadReplies(peer: Peer, thread: MessageReference, before: Long = -1, exPeerType: Int = peer.kind): Messaging_LoadReplies_Response =
+        Messaging_LoadReplies_Response.parseFrom(
+            call(
+                MESSAGING,
+                "LoadReplies",
+                Messaging_LoadReplies_Request.newBuilder()
+                    .setPeer(peer.exWire(exPeerType))
+                    .setThreadId(messageId(thread))
+                    .setDate(before)
+                    .setLoadMode(2)
+                    .setLimit(PAGE_SIZE)
+                    .build(),
+            ),
+        )
+
+    /** `GetMessagesRepliesInfo` takes one message id; used to refresh a single thread badge. */
+    suspend fun repliesInfo(peer: Peer, message: MessageReference, exPeerType: Int = peer.kind): Int {
+        val resp = Messaging_GetMessagesRepliesInfo_Response.parseFrom(
+            call(
+                MESSAGING,
+                "GetMessagesRepliesInfo",
+                Messaging_GetMessagesRepliesInfo_Request.newBuilder()
+                    .setPeer(peer.exWire(exPeerType))
+                    .setField18(messageId(message))
+                    .build(),
+            ),
+        )
+        return resp.containersList.firstOrNull { it.rid == message.rid }?.repliesInfo?.repliesCount ?: 0
+    }
+
     suspend fun pinMessage(peer: Peer, message: MessageReference, pin: Boolean) {
-        val id = MessageId.newBuilder().setRid(message.rid).setDate(message.date).setSeq(message.sequence).build()
+        val id = messageId(message)
         if (pin) {
             call(MESSAGING, "PinMessage", Messaging_PinMessage_Request.newBuilder()
                 .setPeer(peer.exWire()).setMessageId(id).setJustMine(false).build())
@@ -116,6 +247,7 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         else call(MESSAGING, "UnArchiveDialogs", Messaging_UnArchiveDialogs_Request.newBuilder().addExPeers(peer.exWire()).build())
     }
 
+    // --- Polls ---
     suspend fun createPoll(
         peer: Peer,
         question: String,
@@ -143,6 +275,12 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         Poll_GetPollResults_Response.parseFrom(call(POLL, "GetPollResults",
             Poll_GetPollResults_Request.newBuilder().addAllPollIds(pollIds).build())).pollResultsList
 
+    /** Per-option voter lists for public polls (`Poll/GetFullPollResult`). */
+    suspend fun fullPollResult(pollId: Long): List<FullPollResult> =
+        Poll_GetFullPollResult_Response.parseFrom(
+            call(POLL, "GetFullPollResult", Poll_GetFullPollResult_Request.newBuilder().setPollId(pollId).build()),
+        ).fullPollResultList
+
     suspend fun users(peers: List<UserPeers>): Users_LoadUsers_Response =
         Users_LoadUsers_Response.parseFrom(call(USERS, "LoadUsers", Users_LoadUsers_Request.newBuilder().addAllPeers(peers).build()))
 
@@ -166,6 +304,8 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
                 .setType(if (multiple) 1 else 0)
                 .addAllOptions(options.mapIndexed { index, text -> Options.newBuilder().setId(index).setText(text).build() })
                 .build()
+        fun messageId(reference: MessageReference): MessageId = MessageId.newBuilder()
+            .setRid(reference.rid).setDate(reference.date).setSeq(reference.sequence).build()
         fun reference(peer: Peer, message: MessageReference): QuotedMessageReference =
             QuotedMessageReference.newBuilder().setPeer(peer.wire()).setRid(message.rid)
                 .setDate(Int64Value.of(message.date)).apply {

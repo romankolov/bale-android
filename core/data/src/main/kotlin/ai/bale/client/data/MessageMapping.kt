@@ -2,6 +2,19 @@ package ai.bale.client.data
 
 import ai.bale.client.domain.*
 import ai.bale.client.protocol.*
+import org.json.JSONObject
+
+internal fun Avatar.toRefOrNull(): AvatarRef? {
+    val location = when {
+        hasSmallImage() && smallImage.hasFileLocation() && smallImage.fileLocation.fileId != 0L -> smallImage.fileLocation
+        hasLargeImage() && largeImage.hasFileLocation() && largeImage.fileLocation.fileId != 0L -> largeImage.fileLocation
+        hasFullImage() && fullImage.hasFileLocation() && fullImage.fileLocation.fileId != 0L -> fullImage.fileLocation
+        else -> null
+    } ?: return null
+    return AvatarRef(location.fileId, location.accessHash)
+}
+
+internal fun Users.avatarRefOrNull(): AvatarRef? = if (hasAvatar()) avatar.toRefOrNull() else null
 
 internal fun MessageEntity.history(): History = if (metadata.isEmpty()) History.getDefaultInstance() else
     try { History.parseFrom(metadata) } catch (_: com.google.protobuf.InvalidProtocolBufferException) { History.getDefaultInstance() }
@@ -21,22 +34,23 @@ internal fun MessageEntity.domain(): ChatMessage {
     val history = history()
     val forwarded = isForwardedHistory(history)
     val forwardedInfo = if (forwarded) {
-        val qm = history.quotedMessage
+        val quoted = history.quotedMessage
         ForwardedInfo(
-            senderUserId = qm.senderUserId,
-            publicGroupId = qm.publicGroupId.value,
-            authorName = qm.authorSign.value,
+            senderUserId = quoted.senderUserId,
+            publicGroupId = quoted.publicGroupId.value,
+            authorName = quoted.authorSign.value,
         )
     } else null
     val quote = if (!forwarded && history.hasQuotedMessage()) {
-        val qm = history.quotedMessage
-        QuotePreview(qm.messageId.value, qm.senderUserId, contentText(qm.quotedMessageContent))
+        val quoted = history.quotedMessage
+        QuotePreview(quoted.messageId.value, quoted.senderUserId, contentText(quoted.quotedMessageContent))
     } else null
     val rawMessage = effectiveHistoryMessage(history)
-    val template = if (rawMessage.hasTemplateMessage()) rawMessage.templateMessage else null
-    val unwrapped = if (template != null && template.hasGeneralMessage()) template.generalMessage else rawMessage
+    val unwrapped = unwrapMessage(rawMessage)
+    val template = if (rawMessage.hasTemplateMessage()) rawMessage.templateMessage else unwrapped.takeIf { it.hasTemplateMessage() }?.templateMessage
     val resolvedText = if (deleted) "" else text.ifBlank { contentText(rawMessage) }
     val resolvedSupported = supported || isSupportedMessage(rawMessage)
+    val sticker = if (!deleted && unwrapped.hasStickerMessage()) unwrapped.stickerMessage else null
     return ChatMessage(
         peerKey = peerKey,
         rid = rid,
@@ -60,17 +74,35 @@ internal fun MessageEntity.domain(): ChatMessage {
         buttons = if (deleted || template == null) emptyList() else extractButtons(template),
         serviceNotice = !deleted && unwrapped.hasServiceMessage(),
         forwardedFrom = if (deleted) null else forwardedInfo,
+        repliesCount = if (history.hasReplies()) history.replies.repliesCount else 0,
+        stickerCollectionId = sticker?.stickerCollectionId?.value ?: 0,
+        stickerCollectionAccessHash = sticker?.stickerCollectionAccessHash?.value ?: 0L,
     )
 }
 
-internal fun unwrapMessage(message: Message2): Message2 =
-    if (message.hasTemplateMessage() && message.templateMessage.hasGeneralMessage()) message.templateMessage.generalMessage else message
+internal fun unwrapMessage(message: Message2): Message2 {
+    val unstreamed = if (message.hasStreamedMessage() && message.streamedMessage.hasMessage()) {
+        message.streamedMessage.message
+    } else {
+        message
+    }
+    return if (unstreamed.hasTemplateMessage() && unstreamed.templateMessage.hasGeneralMessage()) {
+        unstreamed.templateMessage.generalMessage
+    } else {
+        unstreamed
+    }
+}
 
 internal fun isSupportedMessage(raw: Message2): Boolean {
     val inner = unwrapMessage(raw)
     return inner.hasTextMessage() || inner.hasLongTextMessage() || inner.hasServiceMessage() ||
         inner.hasDocumentMessage() || inner.hasPollMessage() || inner.hasStickerMessage() ||
-        inner.hasAnimatedStickerMessage() || (raw.hasTemplateMessage() && extractButtons(raw.templateMessage).isNotEmpty())
+        inner.hasAnimatedStickerMessage() || inner.hasJsonMessage() ||
+        inner.hasGiftPacketMessage() || inner.hasGoldGiftPacketMessage() ||
+        inner.hasPurchaseMessage() || inner.hasCrowdFundingMessage() ||
+        inner.hasBankMessage() || inner.hasOrderMessage() ||
+        inner.hasLiveMessage() || inner.hasStory() ||
+        (raw.hasTemplateMessage() && extractButtons(raw.templateMessage).isNotEmpty())
 }
 
 internal fun contentText(raw: Message2): String {
@@ -87,13 +119,69 @@ internal fun contentText(raw: Message2): String {
             }
         message.hasPollMessage() -> message.pollMessage.question
         message.hasStickerMessage() || message.hasAnimatedStickerMessage() -> "Sticker"
+        message.hasJsonMessage() -> formatJsonMessage(message.jsonMessage.rawJson)
+        message.hasGiftPacketMessage() -> {
+            val gift = message.giftPacketMessage
+            val note = gift.regarding.value
+            if (note.isNotBlank()) "🎁 Gift Packet · $note" else "🎁 Gift Packet (${gift.giftCount} gifts)"
+        }
+        message.hasGoldGiftPacketMessage() -> {
+            val gift = message.goldGiftPacketMessage
+            if (gift.description.isNotBlank()) "🪙 Gold Gift · ${gift.description}" else "🪙 Gold Gift Packet"
+        }
+        message.hasPurchaseMessage() -> {
+            val purchase = message.purchaseMessage
+            val innerText = if (purchase.hasMsg()) contentText(purchase.msg) else ""
+            if (innerText.isNotBlank()) "💳 $innerText" else "💳 Payment Request (${purchase.amount} Rials)"
+        }
+        message.hasCrowdFundingMessage() -> {
+            val fund = message.crowdFundingMessage
+            listOf("🤝 ${fund.title}", fund.description).filter { it.isNotBlank() }.joinToString("\n")
+        }
+        message.hasBankMessage() -> "🏦 Bank Receipt"
+        message.hasOrderMessage() -> "🛍️ Order Message"
+        message.hasLiveMessage() -> "🔴 Live Stream"
+        message.hasStory() -> "📸 Shared Story"
         else -> ""
     }
+}
+
+private fun formatJsonMessage(rawJson: String): String {
+    val trimmed = rawJson.trim()
+    if (trimmed.isEmpty()) return "Structured message"
+    return runCatching {
+        val obj = JSONObject(trimmed)
+        val data = obj.optJSONObject("data") ?: obj
+        val dataType = obj.optString("dataType", data.optString("type", "")).lowercase()
+        when {
+            "location" in dataType || (data.has("latitude") && data.has("longitude")) || (data.has("lat") && data.has("lon")) -> {
+                val lat = data.optDouble("latitude", data.optDouble("lat", 0.0))
+                val lon = data.optDouble("longitude", data.optDouble("lon", 0.0))
+                "📍 Location ($lat, $lon)\nhttps://maps.google.com/?q=$lat,$lon"
+            }
+            "contact" in dataType || data.has("phone") || data.has("phoneNumber") -> {
+                val name = data.optString("name", data.optString("fullName", "Contact"))
+                val phone = data.optString("phone", data.optString("phoneNumber", ""))
+                if (phone.isNotBlank()) "👤 $name · $phone" else "👤 $name"
+            }
+            data.optString("text").isNotBlank() -> data.optString("text")
+            data.optString("title").isNotBlank() -> {
+                val description = data.optString("description", "")
+                if (description.isNotBlank()) "${data.optString("title")}\n$description" else data.optString("title")
+            }
+            else -> trimmed.take(300)
+        }
+    }.getOrDefault(trimmed.take(300))
 }
 
 internal fun History.pollMessageOrNull(): PollMessage? {
     val unwrapped = unwrapMessage(effectiveHistoryMessage(this))
     return if (unwrapped.hasPollMessage()) unwrapped.pollMessage else null
+}
+
+internal fun History.documentMessageOrNull(): DocumentMessage? {
+    val unwrapped = unwrapMessage(effectiveHistoryMessage(this))
+    return if (unwrapped.hasDocumentMessage()) unwrapped.documentMessage else null
 }
 
 internal fun History.withPollResult(result: PollResult): History {
@@ -112,7 +200,7 @@ private fun Message2.withInnerPollResult(result: PollResult): Message2? {
     if (hasPollMessage()) {
         return toBuilder().setPollMessage(pollMessage.toBuilder().setResult(result)).build()
     }
-    if (hasTemplateMessage() && templateMessage.generalMessage.hasPollMessage()) {
+    if (hasTemplateMessage() && templateMessage.hasGeneralMessage() && templateMessage.generalMessage.hasPollMessage()) {
         val inner = templateMessage.generalMessage.toBuilder()
             .setPollMessage(templateMessage.generalMessage.pollMessage.toBuilder().setResult(result))
         return toBuilder().setTemplateMessage(templateMessage.toBuilder().setGeneralMessage(inner)).build()
@@ -120,6 +208,11 @@ private fun Message2.withInnerPollResult(result: PollResult): Message2? {
     return null
 }
 
+/**
+ * Keeps client-side state that `LoadHistory`/socket updates do not always carry: a reply quote,
+ * hydrated poll tallies, the thread counter and reactions. Cached rows are re-decoded on read,
+ * so previously stored forwarded or poll messages upgrade without a schema migration.
+ */
 internal fun mergeHistoryPreservingState(old: History?, incoming: History): History {
     if (old == null) return incoming
     var merged = if (!incoming.hasQuotedMessage() && old.hasQuotedMessage()) {
@@ -131,6 +224,12 @@ internal fun mergeHistoryPreservingState(old: History?, incoming: History): Hist
     val oldPoll = old.pollMessageOrNull()
     if (incomingPoll != null && !incomingPoll.hasResult() && oldPoll != null && oldPoll.hasResult()) {
         merged = merged.withPollResult(oldPoll.result)
+    }
+    if (!incoming.hasReplies() && old.hasReplies()) {
+        merged = merged.toBuilder().setReplies(old.replies).build()
+    }
+    if (incoming.reactionsCount == 0 && old.reactionsCount > 0) {
+        merged = merged.toBuilder().addAllReactions(old.reactionsList).build()
     }
     return merged
 }
@@ -149,18 +248,21 @@ private fun extractAttachment(message: Message2): Attachment? = when {
         val width = when {
             ext.hasDocumentExPhoto() -> ext.documentExPhoto.w
             ext.hasDocumentExVideo() -> ext.documentExVideo.w
+            ext.hasDocumentExGif() -> ext.documentExGif.w
             doc.hasThumb() -> doc.thumb.w
             else -> 0
         }
         val height = when {
             ext.hasDocumentExPhoto() -> ext.documentExPhoto.h
             ext.hasDocumentExVideo() -> ext.documentExVideo.h
+            ext.hasDocumentExGif() -> ext.documentExGif.h
             doc.hasThumb() -> doc.thumb.h
             else -> 0
         }
         val duration = when {
             ext.hasDocumentExVoice() -> ext.documentExVoice.duration
             ext.hasDocumentExVideo() -> ext.documentExVideo.duration
+            ext.hasDocumentExGif() -> ext.documentExGif.duration
             ext.hasDocumentExAudio() -> ext.documentExAudio.duration
             else -> 0
         }
@@ -178,6 +280,8 @@ private fun extractAttachment(message: Message2): Attachment? = when {
             thumbnail = if (doc.hasThumb()) doc.thumb.thumb.toByteArray() else byteArrayOf(),
         )
     }
+    message.hasCrowdFundingMessage() && message.crowdFundingMessage.hasPhoto() ->
+        extractAttachment(Message2.newBuilder().setDocumentMessage(message.crowdFundingMessage.photo).build())
     message.hasStickerMessage() -> {
         val sticker = message.stickerMessage
         val preview = when {
@@ -214,16 +318,18 @@ private fun extractButtons(template: TemplateMessage): List<List<BotButton>> {
     val rows = mutableListOf<List<BotButton>>()
     if (template.hasInlineKeyboardMarkup()) {
         template.inlineKeyboardMarkup.listOfInlineListList.forEach { row ->
-            val mapped = row.inlineListList.filter { it.text.isNotBlank() }.map { btn ->
+            val mapped = row.inlineListList.filter { it.text.isNotBlank() }.map { button ->
                 when {
-                    btn.hasUrl() && btn.url.value.isNotBlank() ->
-                        BotButton(btn.text, btn.url.value, BotButtonKind.OpenUrl, template.templateMessageId)
-                    btn.hasCopyText() && btn.copyText.text.isNotBlank() ->
-                        BotButton(btn.text, btn.copyText.text, BotButtonKind.CopyText, template.templateMessageId)
-                    btn.hasCallbackData() ->
-                        BotButton(btn.text, btn.callbackData.value, BotButtonKind.Callback, template.templateMessageId)
+                    button.hasWebApp() && button.webApp.url.isNotBlank() ->
+                        BotButton(button.text, button.webApp.url, BotButtonKind.MiniApp, template.templateMessageId)
+                    button.hasUrl() && button.url.value.isNotBlank() ->
+                        BotButton(button.text, button.url.value, BotButtonKind.OpenUrl, template.templateMessageId)
+                    button.hasCopyText() && button.copyText.text.isNotBlank() ->
+                        BotButton(button.text, button.copyText.text, BotButtonKind.CopyText, template.templateMessageId)
+                    button.hasCallbackData() ->
+                        BotButton(button.text, button.callbackData.value, BotButtonKind.Callback, template.templateMessageId)
                     else ->
-                        BotButton(btn.text, btn.text, BotButtonKind.ReplyText, template.templateMessageId)
+                        BotButton(button.text, button.text, BotButtonKind.ReplyText, template.templateMessageId)
                 }
             }
             if (mapped.isNotEmpty()) rows += mapped
@@ -231,16 +337,16 @@ private fun extractButtons(template: TemplateMessage): List<List<BotButton>> {
     }
     if (template.hasReplyKeyboardMarkup()) {
         template.replyKeyboardMarkup.listOfKeyboardListList.forEach { row ->
-            val mapped = row.keyboardListList.filter { it.text.isNotBlank() }.map { btn ->
-                BotButton(btn.text, btn.text, BotButtonKind.ReplyText, template.templateMessageId)
+            val mapped = row.keyboardListList.filter { it.text.isNotBlank() }.map { button ->
+                BotButton(button.text, button.text, BotButtonKind.ReplyText, template.templateMessageId)
             }
             if (mapped.isNotEmpty()) rows += mapped
         }
     }
     if (rows.isEmpty() && template.btnListCount > 0) {
-        template.btnListList.filter { it.text.isNotBlank() }.forEach { btn ->
-            val kind = if (btn.value.startsWith("https://")) BotButtonKind.OpenUrl else BotButtonKind.Callback
-            rows += listOf(BotButton(btn.text, btn.value.ifBlank { btn.text }, kind, template.templateMessageId))
+        template.btnListList.filter { it.text.isNotBlank() }.forEach { button ->
+            val kind = if (button.value.startsWith("https://")) BotButtonKind.OpenUrl else BotButtonKind.Callback
+            rows += listOf(BotButton(button.text, button.value.ifBlank { button.text }, kind, template.templateMessageId))
         }
     }
     return rows
@@ -252,3 +358,13 @@ internal fun History.entity(account: Int, peerKey: String): MessageEntity {
         account, peerKey, rid, senderUid, contentText(effective), date, Delivery.Sent.name, isSupportedMessage(effective), toByteArray(),
     )
 }
+
+/** `SharedMediaService/MediaResults` carries no `History` envelope, so synthesise an equivalent one. */
+internal fun MediaResults.toHistory(): History = History.newBuilder()
+    .setRid(rid)
+    .setDate(date)
+    .setSenderUid(senderId)
+    .setMessage(content)
+    .build()
+
+internal fun MediaResults.entity(account: Int, peerKey: String): MessageEntity = toHistory().entity(account, peerKey)

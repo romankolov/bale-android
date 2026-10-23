@@ -21,6 +21,9 @@ jobs:
       - run: pip install -r tools/requirements.txt
       - run: python tools/verify_protocol.py
       - run: python tools/generate_coverage.py --check
+      # Cross-layer drift (removed RPCs, renamed members, unmatched overrides) fails here
+      # before Gradle spends minutes compiling the same mistake.
+      - run: python tools/check_kotlin_consistency.py
       - name: Verify Java-lite generation
         run: |
           mkdir -p "$RUNNER_TEMP/protocol-java"
@@ -40,7 +43,7 @@ jobs:
       - name: Use hosted runner Android SDK
         run: echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
       - run: python3 tools/ci_exec.py ci-logs/sdk.log sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
-      - run: python3 tools/ci_exec.py ci-logs/gradle.log ./gradlew --console=plain --continue :core:domain:test :core:network:test :feature:auth:testDebugUnitTest :core:data:testDebugUnitTest :feature:messaging:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest :core:data:assembleDebugAndroidTest
+      - run: python3 tools/ci_exec.py ci-logs/gradle.log ./gradlew --console=plain --continue :core:domain:test :core:network:test :feature:auth:testDebugUnitTest :core:data:testDebugUnitTest :feature:messaging:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleRelease :app:assembleDebugAndroidTest :core:data:assembleDebugAndroidTest
       - name: Report exported Room schema
         if: always()
         run: python3 tools/ci_schema_summary.py
@@ -61,6 +64,12 @@ jobs:
         with:
           name: development-apk
           path: app/build/outputs/apk/debug/*.apk
+      # R8-verified release candidate: same signing key as debug so it installs over the
+      # existing test build without uninstalling, but minified and resource-shrunk.
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: release-candidate-apk
+          path: app/build/outputs/apk/release/*.apk
   device-tests:
     needs: android
     runs-on: ubuntu-24.04

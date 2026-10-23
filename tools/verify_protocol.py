@@ -129,6 +129,18 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual([7, 42], list(parsed.reactions[0].users))
         doc = bale.DocumentMessage(fileId=99, thumb=bale.Thumb(w=32, h=32, thumb=b'jpeg'))
         self.assertEqual(b'jpeg', bale.DocumentMessage.FromString(doc.SerializeToString()).thumb.thumb)
+        col = bale.Collections(id=7, accessHash=11, stickers=[bale.Field265(id=1), bale.Field265(id=2)])
+        self.assertEqual([1, 2], [s.id for s in bale.Collections.FromString(col.SerializeToString()).stickers])
+        folder = bale.Messaging_CreateFolder_Request(name="Friends", field_18=bale.ExPeer(id=7, type=1))
+        again = bale.Messaging_CreateFolder_Request.FromString(folder.SerializeToString())
+        self.assertEqual("Friends", again.name)
+        self.assertEqual(7, again.field_18.id)
+        edit = bale.Messaging_EditFolder_Request(
+            folderId=3, name="Friends", deletedPeers=[bale.ExPeer(id=8, type=2), bale.ExPeer(id=9, type=2)]
+        )
+        self.assertEqual([8, 9], [p.id for p in bale.Messaging_EditFolder_Request.FromString(edit.SerializeToString()).deletedPeers])
+        gif = bale.Images_AddGif_Request(gif=bale.FileLocation(fileId=5), mimeType=bale.Offset(text="video/mp4"))
+        self.assertEqual("video/mp4", bale.Images_AddGif_Request.FromString(gif.SerializeToString()).mimeType.text)
 
     def test_unknown_fields_survive_roundtrip(self):
         raw = blob(55555, b'future')

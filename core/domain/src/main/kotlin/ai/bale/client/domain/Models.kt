@@ -11,7 +11,7 @@ data class Peer(val id: Int, val kind: Int, val accessHash: Long) {
     val key: String get() = "$kind:$id"
 }
 
-/** Bale ExPeerType values used by Files, Poll, Pin, and SendMessage RPCs. */
+/** Bale ExPeerType values used by Files, Poll, Pin, Folders, Scheduler and SendMessage RPCs. */
 object ExPeerKind {
     const val PRIVATE = 1
     const val GROUP = 2
@@ -20,8 +20,29 @@ object ExPeerKind {
     const val SUPERGROUP = 5
 }
 
+/** Reference to a stored image (avatar, sticker, thumbnail) addressable through Files. */
+data class AvatarRef(val fileId: Long, val accessHash: Long)
+
 data class Account(val id: Int, val name: String)
-data class Conversation(val peer: Peer, val title: String, val preview: String, val date: Long, val unread: Int, val muted: Boolean = false)
+
+data class Conversation(
+    val peer: Peer,
+    val title: String,
+    val preview: String,
+    val date: Long,
+    val unread: Int,
+    val muted: Boolean = false,
+    val pinned: Boolean = false,
+    val archived: Boolean = false,
+    val markedUnread: Boolean = false,
+    val unreadMentions: Int = 0,
+    val draft: String = "",
+    val isChannel: Boolean = false,
+    val isBot: Boolean = false,
+    val isSavedMessages: Boolean = false,
+    val avatar: AvatarRef? = null,
+)
+
 enum class Delivery { Pending, Sent, Failed }
 
 enum class AttachmentKind { Photo, Video, Voice, Audio, Document, Sticker }
@@ -93,13 +114,21 @@ data class PollView(
     val totalVoters: Int,
 )
 
-enum class BotButtonKind { Callback, ReplyText, OpenUrl, CopyText }
+enum class BotButtonKind { Callback, ReplyText, OpenUrl, CopyText, MiniApp }
 
 data class BotButton(
     val label: String,
     val value: String,
     val kind: BotButtonKind,
     val templateId: Long = 0,
+)
+
+data class LinkPreviewInfo(
+    val url: String,
+    val title: String,
+    val description: String,
+    val imageUrl: String = "",
+    val summary: String = "",
 )
 
 data class ChatMessage(
@@ -122,6 +151,11 @@ data class ChatMessage(
     val buttons: List<List<BotButton>> = emptyList(),
     val serviceNotice: Boolean = false,
     val forwardedFrom: ForwardedInfo? = null,
+    val senderName: String = "",
+    val senderAvatar: AvatarRef? = null,
+    val repliesCount: Int = 0,
+    val stickerCollectionId: Int = 0,
+    val stickerCollectionAccessHash: Long = 0,
 ) {
     val reference: MessageReference get() = MessageReference(rid, date, sequence)
 }
@@ -138,6 +172,7 @@ data class ContactEntry(
     val handle: String = "",
     val isBot: Boolean = false,
     val isGroup: Boolean = false,
+    val avatar: AvatarRef? = null,
 )
 
 data class GroupMember(
@@ -146,6 +181,7 @@ data class GroupMember(
     val name: String,
     val isAdmin: Boolean = false,
     val title: String = "",
+    val avatar: AvatarRef? = null,
 )
 
 data class PeerProfile(
@@ -163,6 +199,10 @@ data class PeerProfile(
     val inviteUrl: String = "",
     val members: List<GroupMember> = emptyList(),
     val pinnedMessages: List<ChatMessage> = emptyList(),
+    val avatar: AvatarRef? = null,
+    val botCommands: List<BotCommandInfo> = emptyList(),
+    val botMenuButton: BotMenuAction? = null,
+    val bannedMembers: List<GroupMember> = emptyList(),
 )
 
 data class StoryItem(
@@ -174,6 +214,7 @@ data class StoryItem(
     val myReaction: String = "",
     val isChannel: Boolean = false,
     val media: Attachment? = null,
+    val avatar: AvatarRef? = null,
 )
 
 data class AuthSessionInfo(
@@ -183,6 +224,149 @@ data class AuthSessionInfo(
     val location: String,
     val authTimeSeconds: Long,
     val lastActiveAt: Long,
+)
+
+// ---------------------------------------------------------------------------
+// Release-candidate feature surfaces (folder, stickers, scheduling, bots).
+// ---------------------------------------------------------------------------
+
+data class ChatFolder(
+    val id: Int,
+    val name: String,
+    val peerKeys: Set<String>,
+    val unreadCount: Int = 0,
+    val reserved: Boolean = false,
+)
+
+data class StickerItem(
+    val id: Int,
+    val emoji: String,
+    val collectionId: Int,
+    val collectionAccessHash: Long,
+    val fileId: Long,
+    val accessHash: Long,
+    val width: Int = 0,
+    val height: Int = 0,
+    val animated: Boolean = false,
+    val previewBytes: ByteArray = byteArrayOf(),
+) {
+    override fun equals(other: Any?): Boolean = other is StickerItem &&
+        id == other.id && collectionId == other.collectionId &&
+        collectionAccessHash == other.collectionAccessHash && fileId == other.fileId &&
+        accessHash == other.accessHash && emoji == other.emoji && animated == other.animated &&
+        previewBytes.contentEquals(other.previewBytes)
+
+    override fun hashCode(): Int = ((id * 31 + collectionId) * 31 + collectionAccessHash.hashCode()) * 31 + previewBytes.contentHashCode()
+}
+
+data class StickerPack(
+    val id: Int,
+    val accessHash: Long,
+    val name: String,
+    val animated: Boolean,
+    val owned: Boolean,
+    val stickers: List<StickerItem>,
+)
+
+data class SavedGif(
+    val fileId: Long,
+    val accessHash: Long,
+    val storageVersion: Int = 0,
+    val mimeType: String = "video/mp4",
+    val sizeBytes: Long = 0,
+    val width: Int = 0,
+    val height: Int = 0,
+    val durationSeconds: Int = 0,
+    val usedAt: Long = 0,
+    val thumbnail: ByteArray = byteArrayOf(),
+) {
+    override fun equals(other: Any?): Boolean = other is SavedGif &&
+        fileId == other.fileId && accessHash == other.accessHash && mimeType == other.mimeType &&
+        sizeBytes == other.sizeBytes && width == other.width && height == other.height &&
+        durationSeconds == other.durationSeconds && thumbnail.contentEquals(other.thumbnail)
+
+    override fun hashCode(): Int = (fileId.hashCode() * 31 + accessHash.hashCode()) * 31 + thumbnail.contentHashCode()
+}
+
+data class ScheduledMessageItem(
+    val taskId: Long,
+    val peerKey: String,
+    val text: String,
+    val status: Int = 0,
+)
+
+enum class SharedMediaTab(val wireType: Int) {
+    Media(1),
+    Files(2),
+    Voice(3),
+    Links(4),
+}
+
+data class PollVoter(val userId: Int, val name: String, val votedAtMillis: Long)
+
+data class PollOptionVoters(
+    val optionId: Int,
+    val optionText: String,
+    val votesCount: Int,
+    val voters: List<PollVoter>,
+)
+
+data class ReactionVoter(
+    val userId: Int,
+    val name: String,
+    val emoji: String,
+    val reactedAtMillis: Long,
+)
+
+data class BotCommandInfo(val command: String, val description: String)
+
+data class BotMenuAction(
+    val text: String,
+    val miniAppUrl: String = "",
+    val isCommandsMenu: Boolean = false,
+)
+
+data class MiniAppSession(val url: String, val queryId: String)
+
+data class RecommendedBot(
+    val userId: Int,
+    val accessHash: Long = 0,
+    val title: String = "",
+    val handle: String = "",
+    val about: String = "",
+    val description: String = "",
+    val avatar: AvatarRef? = null,
+)
+
+data class InlineBotResultItem(
+    val queryId: Long,
+    val resultId: String,
+    val title: String,
+    val description: String,
+    val sendText: String,
+    val previewUrl: String = "",
+)
+
+enum class AppThemeMode { System, Light, Dark }
+
+enum class AppLanguage(val tag: String) {
+    System(""),
+    English("en"),
+    Persian("fa"),
+}
+
+data class ClientPreferences(
+    val themeMode: AppThemeMode = AppThemeMode.System,
+    val dynamicColor: Boolean = true,
+    val language: AppLanguage = AppLanguage.System,
+)
+
+/** Privacy is surfaced read-only: values come from `Users/GetUserFullPrivacy`. */
+data class SecurityAndPrivacyState(
+    val twoFactorEnabled: Boolean = false,
+    val invitePrivacy: Int = 0,
+    val presencePrivacy: Int = 0,
+    val blockedUsers: List<ContactEntry> = emptyList(),
 )
 
 enum class Connection { Disconnected, Connecting, Connected, Reconnecting, Unauthorized }
@@ -198,11 +382,18 @@ interface AuthRepository {
     suspend fun sessions(): List<AuthSessionInfo> = emptyList()
     suspend fun terminateSession(id: Int) = Unit
     suspend fun terminateOtherSessions() = Unit
+    suspend fun isTwoFactorEnabled(): Boolean = false
+    suspend fun enableTwoFactor(email: String, password: String) = Unit
+    suspend fun disableTwoFactor() = Unit
 }
 
 interface MessengerRepository {
     val connection: StateFlow<Connection>
     val onlineUsers: StateFlow<Set<Int>> get() = EMPTY_ONLINE
+    val preferences: StateFlow<ClientPreferences> get() = DEFAULT_PREFERENCES
+    val avatarPaths: StateFlow<Map<Long, String>> get() = EMPTY_AVATAR_PATHS
+    val folders: StateFlow<List<ChatFolder>> get() = EMPTY_FOLDERS
+
     fun conversations(): Flow<List<Conversation>>
     fun messages(peer: Peer): Flow<List<ChatMessage>>
     fun pagedMessages(peer: Peer): Flow<PagingData<ChatMessage>>
@@ -223,16 +414,62 @@ interface MessengerRepository {
     suspend fun setTyping(peer: Peer, active: Boolean)
     suspend fun sendMedia(peer: Peer, payload: UploadPayload, caption: String = "", reply: ChatMessage? = null) = Unit
     suspend fun downloadMedia(attachment: Attachment): String = ""
+    suspend fun ensureAvatar(avatar: AvatarRef?) = Unit
     suspend fun pinMessage(peer: Peer, message: ChatMessage, pin: Boolean) = Unit
     suspend fun clearChat(peer: Peer) = Unit
     suspend fun deleteChat(peer: Peer) = Unit
     suspend fun setDialogPinned(peer: Peer, pinned: Boolean) = Unit
     suspend fun setDialogArchived(peer: Peer, archived: Boolean) = Unit
+    suspend fun setDialogMuted(peer: Peer, muted: Boolean) = Unit
+    suspend fun setDialogMarkedUnread(peer: Peer, unread: Boolean) = Unit
+    suspend fun saveDraft(peer: Peer, draft: String) = Unit
+    suspend fun openSavedMessages(): Peer? = null
+
+    // Chat folders (`Messaging/LoadFolders` family).
+    suspend fun refreshFolders() = Unit
+    suspend fun createFolder(name: String, peers: List<Peer>): Int = 0
+    suspend fun renameFolder(folderId: Int, name: String) = Unit
+    suspend fun deleteFolder(folderId: Int) = Unit
+    suspend fun addChatToFolder(peer: Peer, folderId: Int): Boolean = false
+    suspend fun removeChatFromFolder(peer: Peer, folderId: Int) = Unit
+
+    // Polls and message inspection.
     suspend fun createPoll(peer: Peer, question: String, options: List<String>, anonymous: Boolean = true, multipleChoice: Boolean = false) = Unit
     suspend fun votePoll(peer: Peer, message: ChatMessage, optionIds: List<Int>, retract: Boolean = false) = Unit
     suspend fun closePoll(peer: Peer, message: ChatMessage) = Unit
     suspend fun refreshPolls(peer: Peer) = Unit
+    suspend fun fullPollVoters(peer: Peer, message: ChatMessage): List<PollOptionVoters> = emptyList()
+    suspend fun reactionVoters(peer: Peer, message: ChatMessage): List<ReactionVoter> = emptyList()
+
+    // Stickers, GIFs, link previews and voice transcripts.
+    suspend fun loadStickerPacks(): List<StickerPack> = emptyList()
+    suspend fun sendSticker(peer: Peer, sticker: StickerItem) = Unit
+    suspend fun addStickerPack(collectionId: Int, accessHash: Long) = Unit
+    suspend fun removeStickerPack(collectionId: Int, accessHash: Long) = Unit
+    suspend fun loadSavedGifs(): List<SavedGif> = emptyList()
+    suspend fun sendSavedGif(peer: Peer, gif: SavedGif) = Unit
+    suspend fun saveGif(attachment: Attachment) = Unit
+    suspend fun removeGif(gif: SavedGif) = Unit
+    suspend fun fetchLinkPreview(url: String, withSummary: Boolean = false): LinkPreviewInfo? = null
+    suspend fun transcribeVoice(peer: Peer, message: ChatMessage): String = ""
+
+    // Threads / channel comments, scheduled sending and shared media.
+    suspend fun loadThreadReplies(peer: Peer, rootMessage: ChatMessage): List<ChatMessage> = emptyList()
+    suspend fun sendThreadReply(peer: Peer, rootMessage: ChatMessage, text: String) = Unit
+    suspend fun listScheduledMessages(peer: Peer): List<ScheduledMessageItem> = emptyList()
+    suspend fun scheduleMessage(peer: Peer, text: String, sendAtMillis: Long) = Unit
+    suspend fun sendScheduledNow(taskId: Long) = Unit
+    suspend fun cancelScheduledMessage(taskId: Long) = Unit
+    suspend fun loadSharedMedia(peer: Peer, tab: SharedMediaTab): List<ChatMessage> = emptyList()
+
+    // Bots, inline bots and Mini-Apps.
     suspend fun pressBotButton(peer: Peer, button: BotButton) = Unit
+    suspend fun openMiniApp(botPeer: Peer, startParam: String = ""): MiniAppSession? = null
+    suspend fun submitMiniAppQuery(botPeer: Peer, queryId: String, data: String, buttonText: String = "") = Unit
+    suspend fun loadRecommendedBots(): List<RecommendedBot> = emptyList()
+    suspend fun queryInlineBot(botHandle: String, peer: Peer, query: String): List<InlineBotResultItem> = emptyList()
+
+    // Directory, communities, administration, moderation and account settings.
     suspend fun contacts(): List<ContactEntry> = emptyList()
     suspend fun searchDirectory(query: String): List<ContactEntry> = emptyList()
     suspend fun addContact(peer: Peer) = Unit
@@ -240,7 +477,10 @@ interface MessengerRepository {
     suspend fun setBlocked(peer: Peer, blocked: Boolean) = Unit
     suspend fun loadProfile(peer: Peer): PeerProfile = PeerProfile(peer, peer.id.toString())
     suspend fun updateOwnProfile(name: String, handle: String, about: String) = Unit
+    suspend fun checkUsernameAvailable(nick: String): Boolean = true
     suspend fun uploadOwnAvatar(payload: UploadPayload) = Unit
+    suspend fun uploadGroupAvatar(group: Peer, payload: UploadPayload) = Unit
+    suspend fun updateChannelHandle(group: Peer, handle: String) = Unit
     suspend fun createCommunity(title: String, isChannel: Boolean, handle: String = "", members: List<Peer> = emptyList()): Peer = Peer(1, 2, 0)
     suspend fun joinInviteOrHandle(input: String): Peer? = null
     suspend fun leaveCommunity(peer: Peer) = Unit
@@ -249,13 +489,19 @@ interface MessengerRepository {
     suspend fun kickMember(group: Peer, user: Peer) = Unit
     suspend fun setMemberAdmin(group: Peer, user: Peer, admin: Boolean, title: String = "") = Unit
     suspend fun revokeInviteLink(group: Peer): String = ""
+    suspend fun reportPeerOrMessage(peer: Peer, message: ChatMessage?, reason: String) = Unit
     suspend fun loadStories(): List<StoryItem> = emptyList()
     suspend fun postTextStory(text: String) = Unit
     suspend fun reactStory(storyId: String, emoji: String) = Unit
     suspend fun deleteStory(storyId: String) = Unit
+    suspend fun loadSecurityAndPrivacy(): SecurityAndPrivacyState = SecurityAndPrivacyState()
+    suspend fun updatePreferences(transform: (ClientPreferences) -> ClientPreferences) = Unit
 }
 
 private val EMPTY_ONLINE = MutableStateFlow(emptySet<Int>())
+private val DEFAULT_PREFERENCES = MutableStateFlow(ClientPreferences())
+private val EMPTY_AVATAR_PATHS = MutableStateFlow(emptyMap<Long, String>())
+private val EMPTY_FOLDERS = MutableStateFlow(emptyList<ChatFolder>())
 
 class RpcException(val code: Long, val reason: String) : Exception("Bale RPC failed ($code)")
 class ProtocolException(message: String) : Exception(message)

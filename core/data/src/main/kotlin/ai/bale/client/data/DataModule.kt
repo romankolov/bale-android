@@ -45,10 +45,20 @@ internal class DataRuntime(context: Context) {
     private val gate = AccountGate()
     private val mediaDir = File(context.cacheDir, "media")
     private val notifier = MessageNotifier(context)
+    private val preferencesStore = ClientPreferencesStore(context.getSharedPreferences("bale_rc_prefs", Context.MODE_PRIVATE))
     private val authImpl = DefaultAuthRepository(SessionVault(context), transport, socket, database, scope, gate, mediaDir, notifier)
     val auth: AuthRepository = authImpl
     val messenger: MessengerRepository = DefaultMessengerRepository(
-        authImpl, socket, database, scope, gate, client, mediaDir, notifier, authImpl::currentToken,
+        auth = authImpl,
+        socket = socket,
+        database = database,
+        scope = scope,
+        gate = gate,
+        http = client,
+        mediaRoot = mediaDir,
+        notifier = notifier,
+        tokenProvider = authImpl::currentToken,
+        preferencesStore = preferencesStore,
     )
 }
 

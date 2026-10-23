@@ -125,6 +125,19 @@ class MessengerViewModel @Inject constructor(
                     mutableOwnProfile.value = null
                     mutableSessions.value = emptyList()
                     mutableInspectedProfile.value = null
+                    mutableViewer.value = null
+                    mutableThread.value = null
+                    mutablePicker.value = StickerPickerState()
+                    mutableSchedule.value = ScheduleState()
+                    mutableMiniApp.value = null
+                    mutablePreview.value = null
+                    mutableVoters.value = null
+                    mutableReportTarget.value = null
+                    mutableSecurity.value = null
+                    mutableSharedMedia.value = SharedMediaState()
+                    mutableHandleAvailable.value = null
+                    mutableDialogFilter.value = DialogFilter.All
+                    mutableFolderFilter.value = 0
                     mutableSection.value = AppSection.Chats
                     mutableQuery.value = ""
                     back()
@@ -137,10 +150,10 @@ class MessengerViewModel @Inject constructor(
     fun selectSection(target: AppSection) {
         mutableSection.value = target
         when (target) {
-            AppSection.Chats -> Unit
+            AppSection.Chats -> refreshFolders()
             AppSection.Contacts -> refreshContacts()
             AppSection.Stories -> refreshStories()
-            AppSection.Settings -> refreshSettings()
+            AppSection.Settings -> { refreshSettings(); refreshSecurity(); refreshFolders() }
         }
     }
 
@@ -152,9 +165,15 @@ class MessengerViewModel @Inject constructor(
         mutableSection.value = AppSection.Chats
         savedState["peerId"] = peer.id; savedState["peerKind"] = peer.kind; savedState["peerHash"] = peer.accessHash
         visibleRead.value = null
+        mutableDraftText.value = ""
         mutableSelected.value = peer
         mutableComposer.value = ComposerState()
         mutableInspectedProfile.value = null
+        mutableViewer.value = null
+        mutableThread.value = null
+        mutableSchedule.value = ScheduleState()
+        mutableMiniApp.value = null
+        mutablePreview.value = null
         mutableMoreHistory.value = true
         loadOlder(first = true)
     }
@@ -208,8 +227,10 @@ class MessengerViewModel @Inject constructor(
                 if (editing != null) {
                     messenger.edit(peer, editing, text)
                     if (account.value?.id == origin && composer.value == composition) mutableComposer.value = ComposerState()
+                    mutableDraftText.value = ""
                     onQueued()
                 } else {
+                    mutableDraftText.value = ""
                     val rid = messenger.queue(peer, text, composition.reply)
                     if (account.value?.id != origin) return@launch
                     onQueued()
@@ -489,6 +510,7 @@ class MessengerViewModel @Inject constructor(
     fun openSearchHit(hit: SearchHit) { closeSearch(); open(hit.peer) }
 
     fun draftChanged(value: String) {
+        mutableDraftText.value = value
         val peer = selected.value ?: return
         typingJob?.cancel()
         if (value.isBlank()) { stopTyping(); return }
@@ -507,6 +529,440 @@ class MessengerViewModel @Inject constructor(
         viewModelScope.launch { quiet { messenger.setTyping(peer, false) } }
     }
 
+    // ---------------------------------------------------------------
+    // Release-candidate surfaces: folders & filters, avatars, media
+    // viewer, stickers & GIFs, threads, scheduling, Mini-Apps,
+    // link previews, voters, moderation, security and appearance.
+    // ---------------------------------------------------------------
+    val preferences = messenger.preferences.stateIn(viewModelScope, SharingStarted.Eagerly, ClientPreferences())
+    val avatarPaths = messenger.avatarPaths
+    val folders = messenger.folders
+
+    private val mutableFolderFilter = MutableStateFlow(0)
+    val folderFilter = mutableFolderFilter.asStateFlow()
+    private val mutableDraftText = MutableStateFlow("")
+    private val mutableDialogFilter = MutableStateFlow(DialogFilter.All)
+    val dialogFilter = mutableDialogFilter.asStateFlow()
+
+    val visibleChats = combine(conversations, query, folders, mutableFolderFilter, mutableDialogFilter) { items, text, packs, folderId, filter ->
+        val scoped = if (folderId == 0) items else items.filter { chat ->
+            packs.firstOrNull { it.id == folderId }?.peerKeys?.contains(chat.peer.key) == true
+        }
+        scoped.filter { it.matches(text, filter) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun setDialogFilter(filter: DialogFilter) { mutableDialogFilter.value = filter }
+    fun assignChatToFolder(peer: Peer, folderId: Int) = operation {
+        if (folderId != 0) messenger.addChatToFolder(peer, folderId)
+        messenger.refreshFolders()
+    }
+
+    fun removeFromFolder(peer: Peer, folderId: Int) = operation {
+        messenger.removeChatFromFolder(peer, folderId)
+        messenger.refreshFolders()
+    }
+
+    fun selectFolder(id: Int) {
+        mutableFolderFilter.value = id
+        if (id != 0) refreshFolders()
+    }
+
+    fun refreshFolders() = operation(false) { messenger.refreshFolders() }
+
+    fun createFolder(name: String) = operation {
+        val peers = visibleChats.value.map { it.peer }
+        val folderId = messenger.createFolder(name, peers)
+        messenger.refreshFolders()
+        mutableFolderFilter.value = folderId
+        mutableDialogFilter.value = DialogFilter.All
+    }
+
+    fun deleteFolder(id: Int) = operation {
+        messenger.deleteFolder(id)
+        if (mutableFolderFilter.value == id) mutableFolderFilter.value = 0
+        messenger.refreshFolders()
+    }
+
+    fun openSavedMessages() = operation { messenger.openSavedMessages()?.let { open(it) } }
+
+    fun toggleMute(peer: Peer) = operation(false) {
+        val muted = conversations.value.firstOrNull { it.peer.key == peer.key }?.muted == true
+        messenger.setDialogMuted(peer, !muted)
+    }
+
+    fun toggleMarkedUnread(peer: Peer) = operation(false) {
+        val unread = conversations.value.firstOrNull { it.peer.key == peer.key }?.markedUnread == true
+        messenger.setDialogMarkedUnread(peer, !unread)
+    }
+
+    private var draftJob: Job? = null
+
+    /** Debounced so typing does not rewrite the preferences snapshot on every keystroke. */
+    fun persistDraft(peer: Peer, draft: String) {
+        draftJob?.cancel()
+        draftJob = viewModelScope.launch {
+            delay(700)
+            quiet { messenger.saveDraft(peer, draft) }
+        }
+    }
+
+    fun openMiniAppFrom(url: String) {
+        val peer = selected.value ?: return
+        if (url.startsWith("https://")) {
+            mutableMiniApp.value = MiniAppState(bot = peer, session = MiniAppSession(url = url, queryId = ""))
+        } else {
+            openMiniApp(url)
+        }
+    }
+
+    /** Warms the on-disk avatar cache for the peers currently visible on screen. */
+    fun ensureAvatars(refs: List<AvatarRef?>) {
+        val targets = refs.filterNotNull().distinct().take(AVATAR_WARM_BATCH)
+        if (targets.isEmpty()) return
+        viewModelScope.launch { targets.forEach { avatar -> quiet { messenger.ensureAvatar(avatar) } } }
+    }
+
+    // --- Full-screen media viewer, transcripts and GIF saving ---
+    private val mutableViewer = MutableStateFlow<ViewerState?>(null)
+    val viewer = mutableViewer.asStateFlow()
+
+    fun openViewer(message: ChatMessage) {
+        val attachment = message.attachment ?: return
+        mutableViewer.value = ViewerState(message = message)
+        viewModelScope.launch {
+            try {
+                val path = messenger.downloadMedia(attachment)
+                if (viewer.value?.message?.rid == message.rid) {
+                    mutableViewer.value = ViewerState(message = message, path = path, busy = false, failed = path.isBlank())
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (viewer.value?.message?.rid == message.rid) {
+                    mutableViewer.value = ViewerState(message = message, busy = false, failed = true)
+                }
+            }
+        }
+    }
+
+    fun closeViewer() { mutableViewer.value = null }
+
+    fun transcribeVoiceInViewer() {
+        val current = viewer.value ?: return
+        val peer = selected.value ?: return
+        mutableViewer.value = current.copy(transcribing = true, transcript = null)
+        viewModelScope.launch {
+            val text = runCatching { messenger.transcribeVoice(peer, current.message) }
+            mutableViewer.value = viewer.value?.copy(
+                transcribing = false,
+                transcript = text.getOrNull().orEmpty(),
+                transcriptFailed = text.isFailure,
+            )
+        }
+    }
+
+    fun saveViewerGif() {
+        val attachment = viewer.value?.message?.attachment ?: return
+        operation { messenger.saveGif(attachment) }
+    }
+
+    // --- Sticker and GIF picker ---
+    private val mutablePicker = MutableStateFlow(StickerPickerState())
+    val picker = mutablePicker.asStateFlow()
+
+    fun openPicker(mode: PickerMode) {
+        mutablePicker.value = StickerPickerState(mode = mode, busy = true)
+        viewModelScope.launch {
+            try {
+                when (mode) {
+                    PickerMode.Stickers -> mutablePicker.value = StickerPickerState(mode = mode, packs = messenger.loadStickerPacks())
+                    PickerMode.Gifs -> mutablePicker.value = StickerPickerState(mode = mode, gifs = messenger.loadSavedGifs())
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutablePicker.value = StickerPickerState(mode = mode, failed = true)
+            }
+        }
+    }
+
+    fun closePicker() { mutablePicker.value = StickerPickerState() }
+
+    fun sendSticker(sticker: StickerItem) {
+        val peer = selected.value ?: return
+        closePicker()
+        operation(false) { messenger.sendSticker(peer, sticker) }
+    }
+
+    fun sendGif(gif: SavedGif) {
+        val peer = selected.value ?: return
+        closePicker()
+        operation(false) { messenger.sendSavedGif(peer, gif) }
+    }
+
+    fun removeGif(gif: SavedGif) {
+        operation(false) {
+            messenger.removeGif(gif)
+            mutablePicker.value = mutablePicker.value.copy(gifs = messenger.loadSavedGifs())
+        }
+    }
+
+    // --- Threads and channel comments ---
+    private val mutableThread = MutableStateFlow<ThreadState?>(null)
+    val thread = mutableThread.asStateFlow()
+
+    fun openThread(root: ChatMessage) {
+        val peer = selected.value ?: return
+        mutableThread.value = ThreadState(root = root, busy = true)
+        viewModelScope.launch {
+            val replies = runCatching { messenger.loadThreadReplies(peer, root) }
+            if (thread.value?.root?.rid == root.rid) {
+                mutableThread.value = ThreadState(
+                    root = root,
+                    replies = replies.getOrDefault(emptyList()),
+                    busy = false,
+                    failed = replies.isFailure,
+                )
+            }
+        }
+    }
+
+    fun closeThread() { mutableThread.value = null }
+
+    fun sendThreadReply(text: String) {
+        val peer = selected.value ?: return
+        val root = thread.value?.root ?: return
+        if (text.isBlank()) return
+        operation(false) {
+            messenger.sendThreadReply(peer, root, text)
+            messenger.loadThreadReplies(peer, root).let { replies ->
+                mutableThread.value = ThreadState(root = root, replies = replies)
+            }
+        }
+    }
+
+    // --- Scheduled messages ---
+    private val mutableSchedule = MutableStateFlow(ScheduleState())
+    val schedule = mutableSchedule.asStateFlow()
+
+    fun openScheduleComposer() { mutableSchedule.update { it.copy(composing = true) } }
+    fun closeScheduleComposer() { mutableSchedule.update { it.copy(composing = false) } }
+
+    fun scheduleMessage(peer: Peer, minutesFromNow: Long) {
+        val text = draftSnapshot()
+        if (text.isBlank()) {
+            mutableError.value = true
+            return
+        }
+        operation {
+            messenger.scheduleMessage(peer, text, System.currentTimeMillis() + minutesFromNow * 60_000L)
+            mutableDraftText.value = ""
+            mutableSchedule.value = ScheduleState(items = messenger.listScheduledMessages(peer), open = true)
+        }
+    }
+
+    /** Latest composer text, captured so secondary actions (schedule, preview) never race the field. */
+    fun draftSnapshot(): String = mutableDraftText.value
+
+    fun openScheduledList() {
+        val peer = selected.value ?: return
+        mutableSchedule.value = ScheduleState(busy = true, open = true)
+        viewModelScope.launch {
+            try {
+                mutableSchedule.value = ScheduleState(items = messenger.listScheduledMessages(peer), open = true)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableSchedule.value = ScheduleState(open = true, failed = true)
+            }
+        }
+    }
+
+    fun closeScheduledList() { mutableSchedule.value = ScheduleState() }
+
+    fun sendScheduledNow(taskId: Long) = operation(false) {
+        val peer = selected.value ?: return@operation
+        messenger.sendScheduledNow(taskId)
+        mutableSchedule.value = ScheduleState(items = messenger.listScheduledMessages(peer), open = true)
+    }
+
+    fun cancelScheduled(taskId: Long) = operation(false) {
+        val peer = selected.value ?: return@operation
+        messenger.cancelScheduledMessage(taskId)
+        mutableSchedule.value = ScheduleState(items = messenger.listScheduledMessages(peer), open = true)
+    }
+
+    // --- Bot Mini-Apps ---
+    private val mutableMiniApp = MutableStateFlow<MiniAppState?>(null)
+    val miniApp = mutableMiniApp.asStateFlow()
+
+    fun openMiniApp(startParam: String = "") {
+        val peer = selected.value ?: return
+        operation {
+            val session = messenger.openMiniApp(peer, startParam)
+            if (session == null) mutableError.value = true else mutableMiniApp.value = MiniAppState(bot = peer, session = session)
+        }
+    }
+
+    fun closeMiniApp() { mutableMiniApp.value = null }
+
+    fun submitMiniAppQuery(queryId: String, data: String, buttonText: String) {
+        val peer = mutableMiniApp.value?.bot ?: return
+        viewModelScope.launch { quiet { messenger.submitMiniAppQuery(peer, queryId, data, buttonText) } }
+        closeMiniApp()
+    }
+
+    // --- Link previews ---
+    private val mutablePreview = MutableStateFlow<LinkPreviewState?>(null)
+    val linkPreview = mutablePreview.asStateFlow()
+
+    fun previewLink(url: String, withSummary: Boolean = false) {
+        val clean = url.trim()
+        if (clean.isBlank()) return
+        mutablePreview.value = LinkPreviewState(url = clean, busy = true, withSummary = withSummary)
+        viewModelScope.launch {
+            val info = runCatching { messenger.fetchLinkPreview(clean, withSummary) }.getOrNull()
+            if (linkPreview.value?.url == clean) {
+                mutablePreview.value = LinkPreviewState(url = clean, info = info, busy = false, withSummary = withSummary)
+            }
+        }
+    }
+
+    fun clearLinkPreview() { mutablePreview.value = null }
+
+    // --- Voters for polls and reactions ---
+    private val mutableVoters = MutableStateFlow<VotersState?>(null)
+    val voters = mutableVoters.asStateFlow()
+
+    fun showPollVoters(message: ChatMessage) {
+        val peer = selected.value ?: return
+        mutableVoters.value = VotersState(title = message.poll?.question ?: "Poll", busy = true)
+        viewModelScope.launch {
+            val options = runCatching { messenger.fullPollVoters(peer, message) }.getOrDefault(emptyList())
+            mutableVoters.value = VotersState(
+                title = message.poll?.question ?: "Poll",
+                poll = options,
+                busy = false,
+                failed = options.isEmpty(),
+            )
+        }
+    }
+
+    fun showReactionVoters(message: ChatMessage) {
+        val peer = selected.value ?: return
+        mutableVoters.value = VotersState(title = message.text.ifBlank { "Reactions" }, busy = true)
+        viewModelScope.launch {
+            val entries = runCatching { messenger.reactionVoters(peer, message) }.getOrDefault(emptyList())
+            mutableVoters.value = VotersState(
+                title = message.text.ifBlank { "Reactions" },
+                reactions = entries,
+                busy = false,
+                failed = entries.isEmpty(),
+            )
+        }
+    }
+
+    fun closeVoters() { mutableVoters.value = null }
+
+    // --- Moderation ---
+    private val mutableReportTarget = MutableStateFlow<ChatMessage?>(null)
+    val reportTarget = mutableReportTarget.asStateFlow()
+
+    fun reportMessage(message: ChatMessage?) { mutableReportTarget.value = message }
+
+    fun reportMessageFor(message: ChatMessage, reason: String) {
+        val peer = selected.value ?: return
+        operation { messenger.reportPeerOrMessage(peer, message, reason) }
+    }
+    fun dismissReport() { mutableReportTarget.value = null }
+
+    fun submitReport(reason: String) {
+        val peer = selected.value ?: return
+        val message = reportTarget.value
+        dismissReport()
+        operation { messenger.reportPeerOrMessage(peer, message, reason) }
+    }
+
+    // --- Appearance, security and privacy ---
+    fun setThemeMode(mode: AppThemeMode) { viewModelScope.launch { quiet { messenger.updatePreferences { it.copy(themeMode = mode) } } } }
+    fun setDynamicColor(enabled: Boolean) { viewModelScope.launch { quiet { messenger.updatePreferences { it.copy(dynamicColor = enabled) } } } }
+    fun setLanguage(language: AppLanguage) { viewModelScope.launch { quiet { messenger.updatePreferences { it.copy(language = language) } } } }
+
+    private val mutableSecurity = MutableStateFlow<SecurityAndPrivacyState?>(null)
+    val security = mutableSecurity.asStateFlow()
+
+    fun refreshSecurity() = operation(false) {
+        mutableSecurity.value = messenger.loadSecurityAndPrivacy()
+    }
+
+    fun enableTwoFactor(email: String, password: String) = operation {
+        auth.enableTwoFactor(email, password)
+        mutableSecurity.value = messenger.loadSecurityAndPrivacy()
+    }
+
+    fun disableTwoFactor() = operation {
+        auth.disableTwoFactor()
+        mutableSecurity.value = messenger.loadSecurityAndPrivacy()
+    }
+
+    // --- Community administration, shared media gallery and drafts ---
+    private val mutableSharedMedia = MutableStateFlow(SharedMediaState())
+    val sharedMedia = mutableSharedMedia.asStateFlow()
+
+    fun openSharedMedia(tab: SharedMediaTab = SharedMediaTab.Media) {
+        val peer = selected.value ?: return
+        mutableSharedMedia.value = SharedMediaState(tab = tab, busy = true, open = true)
+        viewModelScope.launch {
+            try {
+                mutableSharedMedia.value = SharedMediaState(tab = tab, items = messenger.loadSharedMedia(peer, tab), open = true)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableSharedMedia.value = SharedMediaState(tab = tab, open = true, failed = true)
+            }
+        }
+    }
+
+    fun selectSharedMediaTab(tab: SharedMediaTab) = openSharedMedia(tab)
+    fun closeSharedMedia() { mutableSharedMedia.value = SharedMediaState() }
+
+    fun uploadCommunityAvatar(payload: UploadPayload) {
+        val peer = mutableInspectedProfile.value?.peer ?: return
+        operation {
+            mutableUploading.value = payload.name
+            try {
+                messenger.uploadGroupAvatar(peer, payload)
+                mutableInspectedProfile.value = messenger.loadProfile(peer)
+            } finally {
+                mutableUploading.value = null
+            }
+        }
+    }
+
+    fun updateCommunityHandle(handle: String) {
+        val peer = mutableInspectedProfile.value?.peer ?: return
+        operation {
+            messenger.updateChannelHandle(peer, handle)
+            mutableInspectedProfile.value = messenger.loadProfile(peer)
+        }
+    }
+
+    fun checkCommunityHandle(handle: String) {
+        viewModelScope.launch {
+            mutableHandleAvailable.value = messenger.checkUsernameAvailable(handle)
+        }
+    }
+
+    private val mutableHandleAvailable = MutableStateFlow<Boolean?>(null)
+    val handleAvailable = mutableHandleAvailable.asStateFlow()
+
+    fun reportConversation(reason: String) {
+        val peer = selected.value ?: return
+        operation { messenger.reportPeerOrMessage(peer, null, reason) }
+    }
+
+    fun draftFor(peer: Peer): String = conversations.value.firstOrNull { it.peer.key == peer.key }?.draft.orEmpty()
+
     private fun operation(showLoading: Boolean = true, block: suspend () -> Unit): Job = viewModelScope.launch {
         if (showLoading) operations.update { it + 1 }
         mutableError.value = false
@@ -520,5 +976,8 @@ class MessengerViewModel @Inject constructor(
         try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { /* typing is best effort */ }
     }
 
-    companion object { private const val PAGE_SIZE = 50 }
+    companion object {
+        private const val PAGE_SIZE = 50
+        private const val AVATAR_WARM_BATCH = 12
+    }
 }

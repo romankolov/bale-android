@@ -1,15 +1,20 @@
 package ai.bale.client
 
+import ai.bale.client.designsystem.AppLocaleStore
 import ai.bale.client.designsystem.BaleTheme
+import ai.bale.client.domain.AppThemeMode
 import ai.bale.client.domain.AuthRepository
+import ai.bale.client.domain.MessengerRepository
 import ai.bale.client.feature.auth.AuthScreen
 import ai.bale.client.feature.messaging.MessengerScreen
+import android.content.Context
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.getValue
@@ -30,6 +35,11 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private val model: SessionViewModel by viewModels()
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocaleStore.forBase(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -38,7 +48,14 @@ class MainActivity : ComponentActivity() {
             val ready by model.ready.collectAsStateWithLifecycle()
             val failed by model.failed.collectAsStateWithLifecycle()
             val account by model.account.collectAsStateWithLifecycle()
-            BaleTheme {
+            val preferences by model.preferences.collectAsStateWithLifecycle()
+            val systemDark = isSystemInDarkTheme()
+            val dark = when (preferences.themeMode) {
+                AppThemeMode.Dark -> true
+                AppThemeMode.Light -> false
+                AppThemeMode.System -> systemDark
+            }
+            BaleTheme(dark = dark, dynamicColor = preferences.dynamicColor) {
                 if (!ready) Surface(Modifier.fillMaxSize()) {
                     Box(contentAlignment = Alignment.Center) {
                         if (failed) Text(stringResource(ai.bale.client.core.designsystem.R.string.startup_failed))
@@ -50,8 +67,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 @HiltViewModel
-class SessionViewModel @Inject constructor(auth: AuthRepository) : ViewModel() {
+class SessionViewModel @Inject constructor(auth: AuthRepository, messenger: MessengerRepository) : ViewModel() {
     val account = auth.account
+    val preferences = messenger.preferences
     private val mutableReady = MutableStateFlow(false)
     val ready = mutableReady.asStateFlow()
     private val mutableFailed = MutableStateFlow(false)
