@@ -38,7 +38,7 @@ jobs:
       - name: Use hosted runner Android SDK
         run: echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
       - run: python3 tools/ci_exec.py ci-logs/sdk.log sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
-      - run: python3 tools/ci_exec.py ci-logs/gradle.log ./gradlew --console=plain :core:domain:test :core:network:test :feature:auth:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest --stacktrace
+      - run: python3 tools/ci_exec.py ci-logs/gradle.log ./gradlew --console=plain :core:domain:test :core:network:test :feature:auth:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         if: always()
         with:

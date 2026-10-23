@@ -18,6 +18,7 @@ def main():
     log = Path(sys.argv[1])
     log.parent.mkdir(parents=True, exist_ok=True)
     tail = deque(maxlen=180)
+    diagnostics = deque(maxlen=120)
     with log.open('w') as output:
         process = subprocess.Popen(sys.argv[2:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    text=True, errors='replace', bufsize=1)
@@ -25,9 +26,11 @@ def main():
             print(line, end='', flush=True)
             output.write(line)
             tail.append(line)
+            if any(marker in line.lower() for marker in ('e: ', 'error:', 'what went wrong', 'execution failed', 'failed', 'incompatible', 'was compiled')):
+                diagnostics.append(line)
         code = process.wait()
     if code and os.getenv('GITHUB_ACTIONS') == 'true':
-        text = ''.join(tail)[-24000:]
+        text = 'Compiler/failure diagnostics:\n' + ''.join(diagnostics)[-12000:] + '\nLog tail:\n' + ''.join(tail)[-12000:]
         text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print(f'::error title=Build or test command failed::{text}', flush=True)
     return code

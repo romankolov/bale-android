@@ -36,6 +36,7 @@ lifecycle-runtime = { module = "androidx.lifecycle:lifecycle-runtime-compose", v
 lifecycle-viewmodel = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 core-ktx = { module = "androidx.core:core-ktx", version = "1.17.0" }
 junit = { module = "junit:junit", version = "4.13.2" }
+androidx-test-core = { module = "androidx.test:core", version = "1.7.0" }
 androidx-test-runner = { module = "androidx.test:runner", version = "1.7.0" }
 
 [plugins]
