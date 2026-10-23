@@ -276,15 +276,19 @@ class RichFeaturesApi(private val rpc: BaleRpc, private val session: Long = rpc.
             .setNanos(((millis % 1_000L) * 1_000_000L).toInt())
             .build()
 
-        /** Stickers are referenced by id + owning collection; the server resolves the binary. */
-        fun stickerMessage(sticker: StickerItem): Message2 = Message2.newBuilder().setStickerMessage(
-            StickerMessage.newBuilder()
+        /**
+         * Stickers are referenced by id + owning collection; the server resolves the binary from
+         * its store. `image256`/`animation` carry `ImageLocation` file references on the wire (see
+         * the web `$.rF` codec), never raw bytes, and `format` is the sticker's own stored format.
+         */
+        fun stickerMessage(sticker: StickerItem): Message2 {
+            val builder = StickerMessage.newBuilder()
                 .setStickerId(Int32Value.of(sticker.id))
                 .setStickerCollectionId(Int32Value.of(sticker.collectionId))
                 .setStickerCollectionAccessHash(Int64Value.of(sticker.collectionAccessHash))
-                .setFormat(if (sticker.animated) 2 else 1)
-                .apply { if (sticker.previewBytes.isNotEmpty()) setImage256(ByteString.copyFrom(sticker.previewBytes)) },
-        ).build()
+            if (sticker.format != 0) builder.setFormat(sticker.format)
+            return Message2.newBuilder().setStickerMessage(builder).build()
+        }
 
         fun gifMessage(gif: SavedGif): Message2 {
             val doc = DocumentMessage.newBuilder()

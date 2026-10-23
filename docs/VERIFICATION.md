@@ -1,5 +1,37 @@
 # Verification
 
+## Release candidate `1.0.0-rc2` — live-device hardening round
+
+Ten issues from hands-on testing of the `1.0.0-rc1` APK were fixed at the data/network/UI layers:
+
+1. **Avatars in chat list & chat screen** — `ensureAvatars` is now invoked from the dialog list,
+   chat bubbles, story tray and sticker picker; `Users/LoadUsers` hydration is chunked (100 per
+   page) and avatar records feed `peerAvatars` even when a dialog row only carried a bare id.
+2. **Numeric ids instead of names** — `LoadDialogs` users/groups stubs with blank names are
+   re-fetched (cache-guarded against refetch loops); `UserNameChanged` updates rename the Room row
+   live; message senders from pushes are queued, debounced (600 ms) and hydrated in one batch.
+3. **Non-image uploads failing** — fresh uploads no longer invent an access hash, documents no
+   longer carry an empty `ext` message, and chunked PUTs follow the server’s `chunkSize` answer
+   (`chunk`/`no` headers 0-based + empty confirming PUT, HTTP 409 tolerated; `duplicate` skips PUTs).
+4. **Stickers** — `StickerMessage` now sends ids + stored `format` only (the ImageLocation trio in
+   the generated model matches the web codec); previews render from the shared file cache.
+5. **Presence & typing** — new `PresenceApi` (`SetOnline`, `GetUsersPresence`, `SubscribeFromOnline`,
+   `GetGroupOnlineCount`) feeding `peerPresence`/`groupOnlineCounts` state flows plus update
+   events 7/8/9/33/34; the header falls back typing → online → last-seen → “N online”.
+6. **Stories per user** — the tray groups by owner with resolved name/avatar, pre-warms owner and
+   media thumbs through the same cache, and hydrates channel titles from `Groups/LoadGroups`.
+7. **Voice codec** — Ogg/Opus 48 kHz 32 kbps via MediaCodec + in-repo Ogg muxer (5 JVM tests),
+   automatic AAC fallback.
+8. **Download progress** — `FilesApi.download` streams percent; bubbles and the viewer show a
+   determinate indicator; the VM clears entries in `finally`.
+9. **Chats vanishing after pinning** — the archived overlay is rebuilt only from
+   `LoadDialogs(archiveFilter=1)` and rejected when it would hide the entire visible list; pin
+   state replaces exactly from `LoadPinnedDialogs`/`PinnedDialogsChanged`; `ChatArchive`,
+   `DialogArchiveStatus` and `ChatShow` keep it in sync per event.
+10. **Not live until refresh** — socket messages now bump `conversations` (date/preview/unread,
+    seeding unknown peers), and the VM staleness poller refreshes dialogs + the open chat after
+    45 s of silence even if a push is lost.
+
 ## Release-candidate gates
 
 Each push runs four gates, and a fifth pair runs on both emulators:
@@ -7,7 +39,7 @@ Each push runs four gates, and a fifth pair runs on both emulators:
 1. `protocol` (≈15 s): 12 wire-encoding tests, `generate_coverage.py --check` (**113** implemented
    RPCs of 699, per-service scope), `check_kotlin_consistency.py` (static cross-layer verification)
    and a Java-lite `protoc` generation check.
-2. `android`: 75 JVM unit tests across five modules, `:app:assembleDebug`, strict `:app:lintDebug`
+2. `android`: 89 JVM unit tests across five modules, `:app:assembleDebug`, strict `:app:lintDebug`
    (`warningsAsErrors = true`), `:app:assembleRelease` (R8 + resource shrinking + debug signing) and
    both androidTest APKs, plus the exported Room schema hash check (must stay
    `1c603993d1d1994bc9e00c0cae07c49d` for schema v3).

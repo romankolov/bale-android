@@ -67,6 +67,10 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     val account by viewModel.account.collectAsStateWithLifecycle()
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val onlineUsers by viewModel.onlineUsers.collectAsStateWithLifecycle()
+    val peerPresence by viewModel.peerPresence.collectAsStateWithLifecycle()
+    val groupOnline by viewModel.groupOnlineCounts.collectAsStateWithLifecycle()
+    val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
+    val downloadProgress by viewModel.downloadProgress.collectAsStateWithLifecycle()
     val loading by viewModel.loading.collectAsStateWithLifecycle()
     val uploadingName by viewModel.uploadingAttachment.collectAsStateWithLifecycle()
     val queuing by viewModel.queuing.collectAsStateWithLifecycle()
@@ -269,6 +273,10 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     }
     if (picker.mode != null) {
         PickerOverlay(
+            avatars = avatarPaths,
+            onStickerVisible = { sticker ->
+                if (sticker.fileId != 0L) viewModel.ensureAvatars(listOf(AvatarRef(sticker.fileId, sticker.accessHash)))
+            },
             state = picker,
             onMode = viewModel::openPicker,
             onSendSticker = viewModel::sendSticker,
@@ -337,6 +345,8 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                         AppSection.Chats -> {
                             if (expanded || selected == null) ConversationList(
                                 onlineIds = onlineUsers,
+                                presences = peerPresence,
+                                onEnsureAvatars = viewModel::ensureAvatars,
                                 chats = chats,
                                 avatars = avatarPaths,
                                 filter = dialogFilter,
@@ -374,6 +384,11 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                                     peerOnline = peer.kind == 1 && peer.id in onlineUsers,
                                     queuing = queuing,
                                     uploadingName = uploadingName,
+                                    uploadProgress = uploadProgress,
+                                    presence = if (peer.kind == 1) peerPresence[peer.id] else null,
+                                    membersOnline = if (peer.kind == 2) groupOnline[peer.id] ?: 0 else 0,
+                                    attachmentProgress = downloadProgress,
+                                    onEnsureAvatars = viewModel::ensureAvatars,
                                     messages = messages,
                                     me = account?.id,
                                     composer = composer,
@@ -484,6 +499,8 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                         )
                         AppSection.Stories -> StoriesPane(
                             stories = stories,
+                            avatars = avatarPaths,
+                            onEnsureAvatars = viewModel::ensureAvatars,
                             myAccountId = account?.id,
                             onRefresh = { viewModel.refreshStories() },
                             onPostTextStory = viewModel::postTextStory,
@@ -555,6 +572,8 @@ private fun SectionItems(): List<Pair<AppSection, String>> = listOf(
 @Composable
 private fun ConversationList(
     onlineIds: Set<Int> = emptySet(),
+    presences: Map<Int, PeerPresence> = emptyMap(),
+    onEnsureAvatars: (List<AvatarRef?>) -> Unit = {},
     chats: List<Conversation>, query: String, connection: Connection, selectedKey: String?, more: Boolean,
     onQuery: (String) -> Unit, onOpen: (Peer) -> Unit, onRefresh: () -> Unit, onMore: () -> Unit,
     onSearch: () -> Unit, onNewCommunity: () -> Unit, onLogout: () -> Unit, modifier: Modifier,
@@ -570,6 +589,7 @@ private fun ConversationList(
     onActions: (Conversation) -> Unit = {},
 ) {
     Column(modifier.fillMaxHeight()) {
+        LaunchedEffect(chats) { onEnsureAvatars(chats.take(24).map { it.avatar }) }
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.chats), style = MaterialTheme.typography.headlineLarge)
             Text(stringResource(when (connection) {
@@ -621,6 +641,7 @@ private fun ConversationList(
                                 if (chat.muted) Text("🔕", style = MaterialTheme.typography.labelSmall)
                                 if (chat.markedUnread) Text("•", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                             }
+                            if (chat.peer.kind == 1) PresenceText(presences[chat.peer.id])
                             Text(
                                 if (chat.draft.isNotBlank()) stringResource(R.string.draft_prefix, chat.draft)
                                 else chat.preview.ifBlank { stringResource(R.string.unsupported_message) },
@@ -649,7 +670,13 @@ private fun ConversationList(
 @Composable
 private fun ChatPane(
     title: String, peer: Peer, connection: Connection, peerOnline: Boolean, queuing: Boolean,
-    uploadingName: String?, messages: LazyPagingItems<ChatMessage>, me: Int?,
+    uploadingName: String?,
+    uploadProgress: Float? = null,
+    presence: PeerPresence? = null,
+    membersOnline: Int = 0,
+    attachmentProgress: Map<Long, Float> = emptyMap(),
+    onEnsureAvatars: (List<AvatarRef?>) -> Unit = {},
+    messages: LazyPagingItems<ChatMessage>, me: Int?,
     composer: ComposerState, typing: Boolean, more: Boolean, loading: Boolean,
     downloaded: Map<Long, String>, playingPath: String?, recordingVoice: Boolean,
     onBack: () -> Unit, onInspect: () -> Unit,
@@ -764,6 +791,10 @@ private fun ChatPane(
         }
     }
 
+    LaunchedEffect(messages.itemCount, peer.key) {
+        onEnsureAvatars((0 until minOf(messages.itemCount, 20)).mapNotNull { index -> messages.peek(index)?.senderAvatar })
+    }
+
     Column(modifier.fillMaxHeight()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text(stringResource(R.string.back)) }
@@ -771,7 +802,13 @@ private fun ChatPane(
                 Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 when {
                     typing -> Text(stringResource(R.string.typing), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                    peerOnline -> Text(stringResource(R.string.online_status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    peerOnline || presence?.online == true -> Text(stringResource(R.string.online_status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    presence != null -> PresenceText(presence)
+                    membersOnline > 0 -> Text(
+                        stringResource(R.string.members_online_count, membersOnline),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
             }
             TextButton(onClick = onInspect, modifier = Modifier.testTag("chat_info_button")) { Text(stringResource(R.string.chat_info)) }
@@ -792,6 +829,7 @@ private fun ChatPane(
                         outgoing = message.senderId == me,
                         group = peer.kind == 2,
                         downloadedPath = message.attachment?.let { downloaded[it.fileId] },
+                        attachmentProgress = message.attachment?.fileId?.takeIf { it != 0L }?.let(attachmentProgress::get),
                         playingPath = playingPath,
                         onActions = onActions,
                         onRetry = onRetry,
@@ -823,7 +861,9 @@ private fun ChatPane(
                 ) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     Text(
-                        stringResource(R.string.uploading_file, activeName),
+                        uploadProgress?.let { fraction ->
+                            stringResource(R.string.uploading_percent, activeName, (fraction * 100).roundToInt())
+                        } ?: stringResource(R.string.uploading_file, activeName),
                         style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -941,6 +981,7 @@ private fun MessageBubble(
     outgoing: Boolean,
     group: Boolean,
     downloadedPath: String?,
+    attachmentProgress: Float? = null,
     playingPath: String?,
     onActions: (ChatMessage) -> Unit,
     onRetry: (ChatMessage) -> Unit,
@@ -1022,14 +1063,30 @@ private fun MessageBubble(
                     if (att.fileId != 0L) {
                         val isAudio = att.kind == AttachmentKind.Voice || att.kind == AttachmentKind.Audio
                         val isPlaying = downloadedPath != null && playingPath == downloadedPath
-                        OutlinedButton(onClick = { onDownloadOrOpen(att) }) {
-                            val label = when {
-                                isPlaying -> stringResource(R.string.stop_audio)
-                                isAudio && downloadedPath != null -> stringResource(R.string.play_audio)
-                                downloadedPath != null -> stringResource(R.string.open_attachment)
-                                else -> "${stringResource(R.string.download_attachment)} (${att.name})"
+                        if (attachmentProgress != null && downloadedPath == null) {
+                            OutlinedButton(onClick = { }, enabled = false, modifier = Modifier.testTag("attachment_progress_${message.rid}")) {
+                                CircularProgressIndicator(
+                                    progress = { attachmentProgress.coerceIn(0f, 1f) },
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    stringResource(R.string.downloading_percent, (attachmentProgress * 100).roundToInt()),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
-                            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        } else {
+                            OutlinedButton(onClick = { onDownloadOrOpen(att) }) {
+                                val label = when {
+                                    isPlaying -> stringResource(R.string.stop_audio)
+                                    isAudio && downloadedPath != null -> stringResource(R.string.play_audio)
+                                    downloadedPath != null -> stringResource(R.string.open_attachment)
+                                    else -> "${stringResource(R.string.download_attachment)} (${att.name})"
+                                }
+                                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     }
                 }

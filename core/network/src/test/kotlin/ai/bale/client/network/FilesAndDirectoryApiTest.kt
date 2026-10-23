@@ -32,9 +32,8 @@ class FilesAndDirectoryApiTest {
         }
     }
 
-    @Test fun `single PUT upload streams full raw bytes without chunk headers and populates document metadata`() = runTest {
+    @Test fun `single PUT upload streams full raw bytes and never invents an access hash`() = runTest {
         val server = MockWebServer()
-        server.enqueue(MockResponse().setResponseCode(200))
         server.enqueue(MockResponse().setResponseCode(200))
         server.start()
         val http = OkHttpClient.Builder()
@@ -54,15 +53,18 @@ class FilesAndDirectoryApiTest {
                 Files_GetNasimFileUploadUrl_Response.newBuilder()
                     .setFileId(901L)
                     .setUrl(server.url("/upload").toString())
-                    .setChunkSize(4)
+                    .setChunkSize(0)
                     .build().toByteArray()
             }
             val api = FilesApi(rpc, http, allowLoopbackHttpForTests = true)
             val rawBytes = byteArrayOf(1, 2, 3, 4, 5, 6)
             val payload = UploadPayload("photo.jpg", "image/jpeg", rawBytes, AttachmentKind.Photo, width = 100, height = 80)
-            val uploaded = api.upload(7, payload, Peer(42, 1, 123), "fixture-jwt")
+            val progress = mutableListOf<Float>()
+            val uploaded = api.upload(7, payload, Peer(42, 1, 123), "fixture-jwt", onProgress = { progress += it })
             assertEquals(901L, uploaded.fileId)
-            assertEquals(7L, uploaded.ownerAccessHash)
+            assertEquals(0L, uploaded.ownerAccessHash)
+            assertTrue(progress.first() < progress.last())
+            assertEquals(1f, progress.last())
             val firstUploadReq = rpc.calls.single().third as Files_GetNasimFileUploadUrl_Request
             assertEquals(7L, firstUploadReq.uid)
             assertEquals(1, firstUploadReq.exPeer.type)
@@ -79,14 +81,14 @@ class FilesAndDirectoryApiTest {
             assertEquals("access_token=fixture-jwt", putReq.getHeader("Cookie"))
             assertEquals(0, server.requestCount - 1)
 
-            // Verify channel uploads use channel peer.id as uploaderUid & ownerAccessHash and append default extensions
+            // Channel uploads use the channel peer.id as the uploader uid.
             val pdfPayload = UploadPayload("report", "application/pdf", byteArrayOf(9, 9, 9), AttachmentKind.Document)
             val chanUploaded = api.upload(7, pdfPayload, Peer(777, 2, 999), "fixture-jwt", exPeerType = ExPeerKind.CHANNEL)
             val chanUploadReq = rpc.calls.last().third as Files_GetNasimFileUploadUrl_Request
             assertEquals(777L, chanUploadReq.uid)
             assertEquals(ExPeerKind.CHANNEL, chanUploadReq.exPeer.type)
             assertEquals("report.pdf", chanUploadReq.name)
-            assertEquals(777L, chanUploaded.ownerAccessHash)
+            assertEquals(0L, chanUploaded.ownerAccessHash)
 
             val thumb = byteArrayOf(11, 22, 33)
             val doc = FilesApi.documentMessage(
@@ -98,14 +100,129 @@ class FilesAndDirectoryApiTest {
                 thumbHeight = 40,
             )
             assertEquals(901L, doc.documentMessage.fileId)
-            assertEquals(7L, doc.documentMessage.accessHash)
+            assertEquals(0L, doc.documentMessage.accessHash)
             assertEquals(100, doc.documentMessage.ext.documentExPhoto.w)
             assertEquals("Holiday", doc.documentMessage.caption.text)
             assertEquals(50, doc.documentMessage.thumb.w)
             assertArrayEquals(thumb, doc.documentMessage.thumb.thumb.toByteArray())
+
+            // Plain documents must not carry an empty `ext` message; the web wire omits it entirely.
+            val pdfDoc = FilesApi.documentMessage(
+                uploaded = chanUploaded,
+                payload = pdfPayload,
+                caption = "",
+                accessHash = 0L,
+            )
+            assertFalse(pdfDoc.documentMessage.hasExt())
+            assertFalse(pdfDoc.documentMessage.hasCaption())
+            assertEquals("application/pdf", pdfDoc.documentMessage.mimeType)
         } finally {
             server.shutdown()
             http.dispatcher.executorService.shutdown()
+        }
+    }
+
+    @Test fun `chunkSize answers switch uploads to indexed chunk PUTs with an empty confirming PUT`() = runTest {
+        val server = MockWebServer()
+        repeat(4) { server.enqueue(MockResponse().setResponseCode(200)) }
+        server.start()
+        val http = OkHttpClient()
+        try {
+            val rpc = StubRpc()
+            rpc.responder = { _, _, _ ->
+                Files_GetNasimFileUploadUrl_Response.newBuilder()
+                    .setFileId(4242L)
+                    .setUrl(server.url("/upload").toString())
+                    .setChunkSize(4)
+                    .build().toByteArray()
+            }
+            val api = FilesApi(rpc, http, allowLoopbackHttpForTests = true)
+            val rawBytes = ByteArray(10) { it.toByte() }
+            val progress = mutableListOf<Float>()
+            val uploaded = api.upload(
+                7,
+                UploadPayload("deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", rawBytes, AttachmentKind.Document),
+                Peer(42, 1, 123),
+                null,
+                onProgress = { progress += it },
+            )
+            assertEquals(4242L, uploaded.fileId)
+            assertEquals(1f, progress.last())
+
+            // 10 bytes at 4/chunk => chunks 0,1,2 then the empty confirmation PUT (4th request).
+            assertEquals(3L, server.requestCount.toLong() - 1L)
+            val first = server.takeRequest()
+            assertEquals("PUT", first.method)
+            assertEquals("0", first.getHeader("chunk"))
+            assertEquals("3", first.getHeader("no"))
+            assertArrayEquals(rawBytes.copyOfRange(0, 4), first.body.readByteArray())
+            val second = server.takeRequest()
+            assertEquals("1", second.getHeader("chunk"))
+            assertArrayEquals(rawBytes.copyOfRange(4, 8), second.body.readByteArray())
+            val third = server.takeRequest()
+            assertEquals("2", third.getHeader("chunk"))
+            assertArrayEquals(rawBytes.copyOfRange(8, 10), third.body.readByteArray())
+            val confirm = server.takeRequest()
+            assertEquals("3", confirm.getHeader("chunk"))
+            assertEquals("3", confirm.getHeader("no"))
+            assertEquals(0L, confirm.bodySize)
+        } finally {
+            server.shutdown()
+            http.dispatcher.executorService.shutdown()
+        }
+    }
+
+    @Test fun `duplicate answers skip the PUT entirely`() = runTest {
+        val server = MockWebServer()
+        server.start()
+        try {
+            val rpc = StubRpc()
+            rpc.responder = { _, _, _ ->
+                Files_GetNasimFileUploadUrl_Response.newBuilder()
+                    .setFileId(55L)
+                    .setDuplicate(true)
+                    .build().toByteArray()
+            }
+            val progress = mutableListOf<Float>()
+            val uploaded = FilesApi(rpc, OkHttpClient(), allowLoopbackHttpForTests = true).upload(
+                7,
+                UploadPayload("a.bin", "application/octet-stream", byteArrayOf(1, 2), AttachmentKind.Document),
+                null,
+                null,
+                onProgress = { progress += it },
+            )
+            assertEquals(55L, uploaded.fileId)
+            assertEquals(0, server.requestCount)
+            assertEquals(listOf(1f), progress)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test fun `download reports byte progress and ends at one`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(Buffer().write(ByteArray(20_000) { (it % 251).toByte() }))
+        )
+        server.start()
+        try {
+            val rpc = StubRpc()
+            rpc.responder = { _, _, _ ->
+                Files_GetNasimFileUrl_Response.newBuilder()
+                    .setFileUrl(
+                        FileUrl.newBuilder().setUrl(server.url("/file").toString()).build()
+                    )
+                    .build().toByteArray()
+            }
+            val progress = mutableListOf<Float>()
+            val bytes = FilesApi(rpc, OkHttpClient(), allowLoopbackHttpForTests = true)
+                .download(Attachment(fileId = 9L, accessHash = 1L, name = "f.bin", mimeType = "application/octet-stream", sizeBytes = 20_000, kind = AttachmentKind.Document), null, onProgress = { progress += it })
+            assertEquals(20_000, bytes.size)
+            assertTrue(progress.isNotEmpty())
+            assertTrue(progress.zipWithNext().all { (a, b) -> b >= a })
+            assertEquals(1f, progress.last())
+        } finally {
+            server.shutdown()
         }
     }
 

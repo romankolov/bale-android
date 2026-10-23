@@ -261,4 +261,12 @@
     <string name="banned_members_title">کاربران حذف‌شده</string>
     <string name="load_shared_media">رسانه‌های مشترک</string>
     <string name="privacy_unknown">مشترک نیست</string>
+    <string name="last_seen_at">آخرین بازدید %1$s</string>
+    <string name="last_seen_recently">آخرین بازدید به‌تازگی</string>
+    <string name="last_seen_week">آخرین بازدید در این هفته</string>
+    <string name="last_seen_month">آخرین بازدید در این ماه</string>
+    <string name="members_online_count">%1$d نفر آنلاین</string>
+    <string name="downloading_percent">در حال دریافت… %1$d%%</string>
+    <string name="uploading_percent">در حال بارگذاری %1$s… %2$d%%</string>
+    <string name="story_count">%1$d داستان</string>
 </resources>

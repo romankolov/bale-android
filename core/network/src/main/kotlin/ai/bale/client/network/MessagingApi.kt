@@ -12,9 +12,11 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
     private suspend fun call(service: String, method: String, request: MessageLite): ByteArray =
         rpc.rpc(service, method, request, session)
 
-    suspend fun dialogs(before: Long = -1): Messaging_LoadDialogs_Response =
+    /** `archiveFilter`: 0 = all dialogs, 1 = archived only, 2 = exclude archived (bundle enum `eO.$yA`). */
+    suspend fun dialogs(before: Long = -1, archiveFilter: Int = 0): Messaging_LoadDialogs_Response =
         Messaging_LoadDialogs_Response.parseFrom(call(MESSAGING, "LoadDialogs",
-            Messaging_LoadDialogs_Request.newBuilder().setMinDate(before).setLimit(PAGE_SIZE).build()))
+            Messaging_LoadDialogs_Request.newBuilder().setMinDate(before).setLimit(PAGE_SIZE)
+                .apply { if (archiveFilter != 0) setArchiveFilter(archiveFilter) }.build()))
 
     suspend fun history(peer: Peer, before: Long): Messaging_LoadHistory_Response =
         Messaging_LoadHistory_Response.parseFrom(call(MESSAGING, "LoadHistory",
@@ -237,14 +239,14 @@ class MessagingApi(private val rpc: BaleRpc, private val session: Long = rpc.ses
         call(MESSAGING, "DeleteChat", Messaging_DeleteChat_Request.newBuilder().setPeer(peer.wire()).build())
     }
 
-    suspend fun setDialogPinned(peer: Peer, pinned: Boolean) {
-        if (pinned) call(MESSAGING, "PinDialogs", Messaging_PinDialogs_Request.newBuilder().addPeers(peer.exWire()).build())
-        else call(MESSAGING, "UnpinDialogs", Messaging_UnpinDialogs_Request.newBuilder().addPeers(peer.exWire()).build())
+    suspend fun setDialogPinned(peer: Peer, pinned: Boolean, exPeerType: Int = peer.kind) {
+        if (pinned) call(MESSAGING, "PinDialogs", Messaging_PinDialogs_Request.newBuilder().addPeers(peer.exWire(exPeerType)).build())
+        else call(MESSAGING, "UnpinDialogs", Messaging_UnpinDialogs_Request.newBuilder().addPeers(peer.exWire(exPeerType)).build())
     }
 
-    suspend fun setDialogArchived(peer: Peer, archived: Boolean) {
-        if (archived) call(MESSAGING, "ArchiveDialogs", Messaging_ArchiveDialogs_Request.newBuilder().addExPeers(peer.exWire()).build())
-        else call(MESSAGING, "UnArchiveDialogs", Messaging_UnArchiveDialogs_Request.newBuilder().addExPeers(peer.exWire()).build())
+    suspend fun setDialogArchived(peer: Peer, archived: Boolean, exPeerType: Int = peer.kind) {
+        if (archived) call(MESSAGING, "ArchiveDialogs", Messaging_ArchiveDialogs_Request.newBuilder().addExPeers(peer.exWire(exPeerType)).build())
+        else call(MESSAGING, "UnArchiveDialogs", Messaging_UnArchiveDialogs_Request.newBuilder().addExPeers(peer.exWire(exPeerType)).build())
     }
 
     // --- Polls ---

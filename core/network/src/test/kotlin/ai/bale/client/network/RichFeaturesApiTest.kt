@@ -251,8 +251,14 @@ class RichFeaturesApiTest {
         assertEquals(5, message.stickerMessage.stickerId.value)
         assertEquals(12, message.stickerMessage.stickerCollectionId.value)
         assertEquals(99L, message.stickerMessage.stickerCollectionAccessHash.value)
-        assertEquals(2, message.stickerMessage.format)
-        assertArrayEquals(byteArrayOf(1, 2, 3), message.stickerMessage.image256.toByteArray())
+        // Stickers are resolved server-side from ids: no file locations, and `format` is omitted
+        // for static stickers (the web client never sends 0).
+        assertFalse(message.stickerMessage.hasImage256())
+        assertFalse(message.stickerMessage.hasAnimation())
+        assertEquals(0, message.stickerMessage.format)
+
+        val animated = RichFeaturesApi.stickerMessage(sticker.copy(format = 2))
+        assertEquals(2, animated.stickerMessage.format)
 
         val gif = SavedGif(fileId = 70L, accessHash = 71L, storageVersion = 2, sizeBytes = 1200L, width = 200, height = 100, durationSeconds = 3)
         val gifMessage = RichFeaturesApi.gifMessage(gif)

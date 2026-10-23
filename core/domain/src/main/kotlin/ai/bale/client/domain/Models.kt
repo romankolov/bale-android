@@ -43,6 +43,16 @@ data class Conversation(
     val avatar: AvatarRef? = null,
 )
 
+/** Presence snapshot for one user, fed by `GetUsersPresence`, live updates and `userLastSeen`. */
+data class PeerPresence(
+    val online: Boolean = false,
+    /** Epoch seconds of the last observed activity; 0 when unknown. */
+    val lastSeenEpochSec: Long = 0,
+    /** The peer hides an exact timestamp; `unknownLevel` carries the coarse bucket instead. */
+    val lastSeenUnknown: Boolean = false,
+    val unknownLevel: Int = 0,
+)
+
 enum class Delivery { Pending, Sent, Failed }
 
 enum class AttachmentKind { Photo, Video, Voice, Audio, Document, Sticker }
@@ -248,6 +258,8 @@ data class StickerItem(
     val width: Int = 0,
     val height: Int = 0,
     val animated: Boolean = false,
+    /** Wire format stored by the server (`Collections.Field265.format`); 0 lets the server default apply. */
+    val format: Int = 0,
     val previewBytes: ByteArray = byteArrayOf(),
 ) {
     override fun equals(other: Any?): Boolean = other is StickerItem &&
@@ -390,7 +402,13 @@ interface AuthRepository {
 interface MessengerRepository {
     val connection: StateFlow<Connection>
     val onlineUsers: StateFlow<Set<Int>> get() = EMPTY_ONLINE
+    /** Live presence snapshot keyed by user id (online flag plus last-seen info). */
+    val peerPresence: StateFlow<Map<Int, PeerPresence>> get() = EMPTY_PRESENCE
+    /** Members online per group id, from `GroupOnline` updates and `GetGroupOnlineCount`. */
+    val groupOnlineCounts: StateFlow<Map<Int, Int>> get() = EMPTY_GROUP_ONLINE
     val preferences: StateFlow<ClientPreferences> get() = DEFAULT_PREFERENCES
+    /** Epoch millis of the last socket-pushed update; staleness drives the fallback poller. */
+    val lastPushAt: StateFlow<Long> get() = NEVER_PUSHED
     val avatarPaths: StateFlow<Map<Long, String>> get() = EMPTY_AVATAR_PATHS
     val folders: StateFlow<List<ChatFolder>> get() = EMPTY_FOLDERS
 
@@ -413,7 +431,17 @@ interface MessengerRepository {
     suspend fun searchMessages(query: String, peer: Peer? = null): SearchPage
     suspend fun setTyping(peer: Peer, active: Boolean)
     suspend fun sendMedia(peer: Peer, payload: UploadPayload, caption: String = "", reply: ChatMessage? = null) = Unit
+    /** Upload with fractional progress callbacks (0f..1f); the no-callback form stays available. */
+    suspend fun sendMediaWithProgress(
+        peer: Peer,
+        payload: UploadPayload,
+        caption: String = "",
+        reply: ChatMessage? = null,
+        onProgress: (Float) -> Unit = {},
+    ) = sendMedia(peer, payload, caption, reply)
     suspend fun downloadMedia(attachment: Attachment): String = ""
+    /** Download with fractional progress callbacks (0f..1f) while bytes stream in. */
+    suspend fun downloadMedia(attachment: Attachment, onProgress: (Float) -> Unit): String = downloadMedia(attachment)
     suspend fun ensureAvatar(avatar: AvatarRef?) = Unit
     suspend fun pinMessage(peer: Peer, message: ChatMessage, pin: Boolean) = Unit
     suspend fun clearChat(peer: Peer) = Unit
@@ -502,6 +530,9 @@ private val EMPTY_ONLINE = MutableStateFlow(emptySet<Int>())
 private val DEFAULT_PREFERENCES = MutableStateFlow(ClientPreferences())
 private val EMPTY_AVATAR_PATHS = MutableStateFlow(emptyMap<Long, String>())
 private val EMPTY_FOLDERS = MutableStateFlow(emptyList<ChatFolder>())
+private val EMPTY_PRESENCE = MutableStateFlow(emptyMap<Int, PeerPresence>())
+private val EMPTY_GROUP_ONLINE = MutableStateFlow(emptyMap<Int, Int>())
+private val NEVER_PUSHED = MutableStateFlow(0L)
 
 class RpcException(val code: Long, val reason: String) : Exception("Bale RPC failed ($code)")
 class ProtocolException(message: String) : Exception(message)

@@ -49,6 +49,20 @@ internal interface MessengerDao {
     suspend fun delivery(account: Int, peer: String, rid: Long, delivery: String, date: Long)
     @Query("UPDATE conversations SET unread=0 WHERE accountId=:account AND peerKey=:peer")
     suspend fun read(account: Int, peer: String)
+    @Query("UPDATE conversations SET title=:title WHERE accountId=:account AND peerKey=:peer")
+    suspend fun renamePeer(account: Int, peer: String, title: String)
+    /**
+     * Live-list bump for a newly observed message: newest date, fresh preview (kept when the
+     * message has no textual body) and an unread tick for incoming senders only. Returns the
+     * affected row count so callers can seed conversations that are not in the local list yet.
+     */
+    @Query(
+        "UPDATE conversations SET date = MAX(date, :date), " +
+            "preview = CASE WHEN :preview = '' THEN preview ELSE :preview END, " +
+            "unread = unread + CASE WHEN :incoming = 1 THEN 1 ELSE 0 END " +
+            "WHERE accountId=:account AND peerKey=:peer",
+    )
+    suspend fun bumpOnMessage(account: Int, peer: String, date: Long, preview: String, incoming: Int): Int
     @Query("UPDATE conversations SET unread=:unread WHERE accountId=:account AND peerKey=:peer")
     suspend fun unread(account: Int, peer: String, unread: Int)
     @Query("UPDATE messages SET received=1, `read`=CASE WHEN :isRead THEN 1 ELSE `read` END WHERE accountId=:account AND peerKey=:peer AND date<=:date AND senderId=:account AND delivery='Sent'")

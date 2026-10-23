@@ -1,6 +1,7 @@
 package ai.bale.client.feature.messaging
 
 import ai.bale.client.domain.Conversation
+import ai.bale.client.domain.PeerPresence
 import ai.bale.client.domain.Peer
 import ai.bale.client.domain.SharedMediaTab
 import org.junit.Assert.*
@@ -72,5 +73,20 @@ class ConversationFilterTest {
         assertEquals(listOf(1, 2, 3, 4), SharedMediaTab.entries.map { it.wireType })
         assertEquals(5, SCHEDULE_PRESET_MINUTES.size)
         assertEquals(SCHEDULE_PRESET_MINUTES.sorted(), SCHEDULE_PRESET_MINUTES)
+    }
+
+    @Test fun `presence labels prefer online then exact timestamps then coarse privacy buckets`() {
+        assertEquals(PresenceLabel.None, presenceLabelFor(null))
+        assertEquals(PresenceLabel.None, presenceLabelFor(PeerPresence()))
+        assertEquals(PresenceLabel.Online, presenceLabelFor(PeerPresence(online = true)))
+        assertEquals(
+            PresenceLabel.LastSeenAt,
+            presenceLabelFor(PeerPresence(lastSeenEpochSec = 1_700_000_000L, lastSeenUnknown = true, unknownLevel = 1)),
+        )
+        assertEquals(PresenceLabel.LastSeenRecently, presenceLabelFor(PeerPresence(lastSeenUnknown = true, unknownLevel = 1)))
+        assertEquals(PresenceLabel.LastSeenWeek, presenceLabelFor(PeerPresence(lastSeenUnknown = true, unknownLevel = 2)))
+        assertEquals(PresenceLabel.LastSeenMonth, presenceLabelFor(PeerPresence(lastSeenUnknown = true, unknownLevel = 3)))
+        // An unknown bucket the client does not know degrades to "no line" instead of lying.
+        assertEquals(PresenceLabel.None, presenceLabelFor(PeerPresence(lastSeenUnknown = true, unknownLevel = 9)))
     }
 }

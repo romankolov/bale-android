@@ -10128,12 +10128,12 @@ message StickerCollectionsChanged {
 message StickerMessage {
   google.protobuf.Int32Value stickerId = 1;
   google.protobuf.BytesValue fastPreview = 2;
-  bytes image512 = 3;
-  bytes image256 = 4;
+  ImageLocation image512 = 3;
+  ImageLocation image256 = 4;
   google.protobuf.Int32Value stickerCollectionId = 5;
   google.protobuf.Int64Value stickerCollectionAccessHash = 6;
   int32 format = 7;
-  bytes animation = 8;
+  ImageLocation animation = 8;
 }
 
 message StickerPacksChanged {

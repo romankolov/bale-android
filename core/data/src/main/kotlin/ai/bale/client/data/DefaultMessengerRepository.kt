@@ -7,6 +7,7 @@ import ai.bale.client.network.DirectoryApi
 import ai.bale.client.network.FilesApi
 import ai.bale.client.network.MessagingApi
 import ai.bale.client.network.MessagingApi.Companion.exWire
+import ai.bale.client.network.PresenceApi
 import ai.bale.client.network.RichFeaturesApi
 import ai.bale.client.protocol.*
 import android.graphics.Bitmap
@@ -50,6 +51,8 @@ internal class DefaultMessengerRepository(
     private val dirtyDialogs = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val typing = MutableStateFlow<Map<String, Map<Int, Long>>>(emptyMap())
     private val mutableOnline = MutableStateFlow<Set<Int>>(emptySet())
+    private val mutablePresence = MutableStateFlow<Map<Int, PeerPresence>>(emptyMap())
+    private val mutableGroupOnline = MutableStateFlow<Map<Int, Int>>(emptyMap())
     private val mutableAvatarPaths = MutableStateFlow<Map<Long, String>>(emptyMap())
     private val mutableFolders = MutableStateFlow<List<ChatFolder>>(emptyList())
     private val peerMetaVersion = MutableStateFlow(0L)
@@ -57,9 +60,18 @@ internal class DefaultMessengerRepository(
     private val ownAccessHashes = ConcurrentHashMap<Int, Long>()
     private val peerAvatars = ConcurrentHashMap<String, AvatarRef>()
     private val userNames = ConcurrentHashMap<String, String>()
+    private val groupTitles = ConcurrentHashMap<String, String>()
+    private val pendingSenders = MutableSharedFlow<Int>(extraBufferCapacity = 128, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val presenceSubscribed = ConcurrentHashMap<String, Int>()
+    private val pendingSenderIds: MutableSet<Int> = Collections.newSetFromMap(ConcurrentHashMap())
+    private val mutableLastPushAt = MutableStateFlow(0L)
+    override val lastPushAt: StateFlow<Long> = mutableLastPushAt.asStateFlow()
+    private var onlineAnnouncedSession = 0L
     private val inFlightAvatars: MutableSet<Long> = Collections.newSetFromMap(ConcurrentHashMap())
 
     override val onlineUsers = mutableOnline.asStateFlow()
+    override val peerPresence: StateFlow<Map<Int, PeerPresence>> = mutablePresence.asStateFlow()
+    override val groupOnlineCounts: StateFlow<Map<Int, Int>> = mutableGroupOnline.asStateFlow()
     override val connection = socket.state
     override val preferences: StateFlow<ClientPreferences> = preferencesStore.preferences
     override val avatarPaths: StateFlow<Map<Long, String>> = mutableAvatarPaths.asStateFlow()
@@ -71,6 +83,7 @@ internal class DefaultMessengerRepository(
         val files: FilesApi,
         val directory: DirectoryApi,
         val rich: RichFeaturesApi,
+        val presence: PresenceApi,
         val token: String?,
     )
 
@@ -83,6 +96,7 @@ internal class DefaultMessengerRepository(
             files = FilesApi(socket, http, allowLoopbackHttpForTests, epoch),
             directory = DirectoryApi(socket, epoch),
             rich = RichFeaturesApi(socket, epoch),
+            presence = PresenceApi(socket, epoch),
             token = tokenProvider(),
         )
     }
@@ -107,6 +121,9 @@ internal class DefaultMessengerRepository(
     private fun recordGroupMeta(accountId: Int, group: Groups2) {
         if (group.id == 0) return
         recordGroupType(accountId, group.id, group.groupType)
+        if (group.title.isNotBlank() && groupTitles.put("$accountId:${group.id}", group.title) != group.title) {
+            peerMetaVersion.update { it + 1 }
+        }
         if (group.hasAvatar()) {
             group.avatar.toRefOrNull()?.let { ref ->
                 if (peerAvatars.put("$accountId:2:${group.id}", ref) != ref) peerMetaVersion.update { it + 1 }
@@ -131,8 +148,56 @@ internal class DefaultMessengerRepository(
         val missing = userIds.filter { it != 0 && !userNames.containsKey("${session.account.id}:${it}") }.distinct()
         if (missing.isEmpty()) return
         safely {
-            val response = session.messaging.users(missing.map { UserPeers.newBuilder().setUid(it).build() })
-            response.usersList.forEach { recordUserMeta(session.account.id, it) }
+            // The web client resolves peers in bounded pages; oversized batches are truncated server-side.
+            missing.chunked(100).forEach { chunk ->
+                val response = session.messaging.users(chunk.map { UserPeers.newBuilder().setUid(it).build() })
+                response.usersList.forEach { recordUserMeta(session.account.id, it) }
+            }
+        }
+    }
+
+    /** Pull presence for user peers, cache it and subscribe to live online/offline pushes. */
+    private suspend fun refreshPresence(session: ActiveClients, userIds: List<Int>, hashOf: (Int) -> Long = { 0L }) {
+        val targets = userIds.filter { it != 0 && it != session.account.id }.distinct().take(150)
+        if (targets.isEmpty()) return
+        safely {
+            val response = session.presence.usersPresence(targets, subscribe = true)
+            val online = mutableSetOf<Int>()
+            val next = mutablePresence.value.toMutableMap()
+            response.presencesList.forEach { entry ->
+                when {
+                    entry.hasUserOnline() -> {
+                        val peer = entry.userOnline.peer
+                        if (peer.uid != 0) {
+                            online += peer.uid
+                            val previous = next[peer.uid]
+                            next[peer.uid] = (previous ?: PeerPresence()).copy(online = true, lastSeenUnknown = false)
+                        }
+                    }
+                    entry.hasUserOffline() -> {
+                        val peer = entry.userOffline.peer
+                        if (peer.uid != 0) {
+                            val date = if (entry.userOffline.hasDate()) entry.userOffline.date.value else 0L
+                            val unknown = entry.userOffline.userLastSeenUnknown.value
+                            next[peer.uid] = PeerPresence(
+                                online = false,
+                                lastSeenEpochSec = date,
+                                lastSeenUnknown = unknown,
+                                unknownLevel = if (unknown) entry.userOffline.unknownLastSeenValue else 0,
+                            )
+                        }
+                    }
+                }
+            }
+            if (next.isNotEmpty()) mutablePresence.update { current -> current + next.filterKeys { it in targets } }
+            mutableOnline.update { ids -> ids + online }
+        }
+        val subscriptionEpoch = "${session.account.id}:${socket.sessionId}"
+        val fresh = targets.filter { presenceSubscribed.putIfAbsent("$subscriptionEpoch:$it", 1) == null }
+        if (fresh.isNotEmpty()) {
+            safely {
+                session.presence.subscribeFromOnline(fresh.mapNotNull { uid -> PresenceApi.userPeer(Peer(uid, 1, hashOf(uid))) })
+            }
         }
     }
 
@@ -154,8 +219,12 @@ internal class DefaultMessengerRepository(
         val cacheKey = "${account.id}:${row.peerKey}"
         val exType = exPeerTypes[cacheKey] ?: row.kind
         val saved = row.kind == 1 && row.peerId == account.id
+        // Prefer resolved profile names over the numeric placeholder that may have been stored
+        // before Users/LoadUsers answered; the list re-emits whenever the metadata cache changes.
+        val resolved = if (row.kind == 1) userNames["${account.id}:${row.peerId}"] else groupTitles["${account.id}:${row.peerId}"]
+        val staleIdTitle = row.title.isBlank() || row.title == row.peerId.toString()
         return row.domain().copy(
-            title = if (saved) "Saved Messages" else row.title,
+            title = if (saved) "Saved Messages" else resolved?.takeIf { it.isNotBlank() } ?: if (staleIdTitle) row.peerId.toString() else row.title,
             pinned = row.peerKey in overlay.pinnedPeers,
             archived = row.peerKey in overlay.archivedPeers,
             muted = row.peerKey in overlay.mutedPeers,
@@ -169,6 +238,30 @@ internal class DefaultMessengerRepository(
         )
     }
 
+    /**
+     * Live bump of the dialog row when a message is merged from the socket: recency, preview and
+     * (for incoming senders only) the unread counter. Peers that are not in the local list yet get
+     * a minimal row so the chat appears immediately instead of after the next manual refresh.
+     */
+    private suspend fun bumpConversation(account: Account, peerType: Int, peerId: Int, date: Long, history: History, incoming: Boolean) {
+        if (peerId == 0) return
+        val kind = if (peerType == 1) 1 else 2
+        val key = "$kind:$peerId"
+        val preview = contentText(effectiveHistoryMessage(history))
+        val touched = dao.bumpOnMessage(account.id, key, date, preview, if (incoming) 1 else 0)
+        if (touched > 0) return
+        if (!incoming) return
+        dao.conversations(
+            listOf(
+                ConversationEntity(
+                    account.id, key, peerId, kind, 0L,
+                    (if (kind == 1) userNames["${account.id}:$peerId"] else groupTitles["${account.id}:$peerId"]) ?: peerId.toString(),
+                    preview, date, 1,
+                ),
+            ),
+        )
+    }
+
     private fun enrichMessage(account: Account, message: ChatMessage): ChatMessage {
         val own = message.senderId == account.id
         return message.copy(
@@ -179,7 +272,31 @@ internal class DefaultMessengerRepository(
 
     init {
         scope.launch {
-            connection.collectLatest { if (it == Connection.Connected) safely { refreshConversations() } }
+            connection.collectLatest { state ->
+                if (state == Connection.Connected) {
+                    mutableLastPushAt.value = System.currentTimeMillis()
+                    safely { refreshConversations() }
+                    // Announce this client online once per socket epoch so peers see us (and we get pushes).
+                    val epoch = socket.sessionId
+                    if (epoch != 0L && onlineAnnouncedSession != epoch) {
+                        onlineAnnouncedSession = epoch
+                        activeSession()?.let { session -> safely { session.presence.setOnline(true) } }
+                    }
+                }
+            }
+        }
+        scope.launch {
+            // Senders observed only through pushed updates need the same name/avatar hydration the
+            // dialog loader performs; batch them instead of firing one RPC per message.
+            pendingSenders.debounce(600).collect {
+                val account = auth.account.value ?: return@collect
+                val missing = pendingSenderIds.filter { uid -> !userNames.containsKey("${account.id}:$uid") }.toList()
+                pendingSenderIds.clear()
+                if (missing.isNotEmpty()) activeSession()?.let { session ->
+                    safely { hydrateUsers(session, missing) }
+                    safely { refreshPresence(session, missing) }
+                }
+            }
         }
         scope.launch {
             // Do not block the socket-update reducer on one network refresh per event.
@@ -206,6 +323,11 @@ internal class DefaultMessengerRepository(
                     typing.value = emptyMap()
                     mutableOnline.value = emptySet()
                     mutableFolders.value = emptyList()
+                    mutablePresence.value = emptyMap()
+                    mutableGroupOnline.value = emptyMap()
+                    pendingSenderIds.clear()
+                    presenceSubscribed.keys.removeAll { it.startsWith("$previousAccountId:") }
+                    groupTitles.keys.removeAll { it.startsWith("$previousAccountId:") }
                     ownAccessHashes.clear()
                     peerMetaVersion.update { it + 1 }
                 }
@@ -311,22 +433,33 @@ internal class DefaultMessengerRepository(
         val groups = response.groupsList.associateBy { it.id }.toMutableMap()
         val userHashes = response.userPeersList.associate { it.uid to it.accessHash }
         val groupHashes = response.groupPeersList.associate { it.groupId to it.accessHash }
-        val missingUsers = response.dialogsList.filter { it.peer.type == 1 && it.peer.id !in users }
-            .map { UserPeers.newBuilder().setUid(it.peer.id).setAccessHash(userHashes[it.peer.id] ?: 0).build() }.distinctBy { it.uid }
-        val missingGroups = response.dialogsList.filter { it.peer.type == 2 && it.peer.id !in groups }
-            .map { GroupPeer.newBuilder().setGroupId(it.peer.id).setAccessHash(groupHashes[it.peer.id] ?: 0).build() }.distinctBy { it.groupId }
-        if (missingUsers.isNotEmpty()) safely { users.putAll(api.users(missingUsers).usersList.associateBy { it.id }) }
-        if (missingGroups.isNotEmpty()) safely { groups.putAll(api.groups(missingGroups).groupsList.associateBy { it.id }) }
+        // A peer can be "present" in the inline lists as a bare {id} stub; treat blank display
+        // names as missing so dialog rows never keep numeric placeholders after hydration.
+        val missingUsers = response.dialogsList
+            .filter { it.peer.type == 1 && users[it.peer.id]?.name.isNullOrBlank() && userNames["${account.id}:${it.peer.id}"].isNullOrBlank() }
+            .map { UserPeers.newBuilder().setUid(it.peer.id).setAccessHash(userHashes[it.peer.id] ?: 0).build() }
+            .distinctBy { it.uid }
+        val missingGroups = response.dialogsList
+            .filter { it.peer.type == 2 && groups[it.peer.id]?.title.isNullOrBlank() }
+            .map { GroupPeer.newBuilder().setGroupId(it.peer.id).setAccessHash(groupHashes[it.peer.id] ?: 0).build() }
+            .distinctBy { it.groupId }
+        missingUsers.chunked(METADATA_PAGE_SIZE).forEach { chunk ->
+            if (chunk.isNotEmpty()) safely { users.putAll(api.users(chunk).usersList.associateBy { it.id }) }
+        }
+        missingGroups.chunked(METADATA_PAGE_SIZE).forEach { chunk ->
+            if (chunk.isNotEmpty()) safely { groups.putAll(api.groups(chunk).groupsList.associateBy { it.id }) }
+        }
         users.values.forEach { recordUserMeta(account.id, it, userHashes[it.id] ?: 0L) }
         groups.values.forEach { recordGroupMeta(account.id, it) }
 
         val serverMuted = mutableSetOf<String>()
         val serverUnread = mutableSetOf<String>()
         val serverMentions = mutableMapOf<String, Int>()
-        val serverPinned = mutableSetOf<String>()
-        runCatching { api.pinnedDialogs() }.getOrDefault(emptyList()).forEach { pinned ->
-            if (pinned.peer.type in 1..2) serverPinned += "${pinned.peer.type}:${pinned.peer.id}"
-        }
+        // Authoritative pinned snapshot; null means the fetch failed and local state stays untouched.
+        val serverPinned = runCatching { api.pinnedDialogs() }.getOrNull()
+            ?.filter { it.peer.type in 1..2 }
+            ?.map { "${it.peer.type}:${it.peer.id}" }
+            ?.toSet()
         gate.mutex.withLock {
             if (auth.account.value != account) return@withLock
             val rows = response.dialogsList.filter { it.peer.type in 1..2 }.map { dialog ->
@@ -353,16 +486,21 @@ internal class DefaultMessengerRepository(
                 )
             }
             dao.conversations(rows)
-            if (serverMuted.isNotEmpty() || serverUnread.isNotEmpty() || serverMentions.isNotEmpty() || serverPinned.isNotEmpty()) {
+            if (serverMuted.isNotEmpty() || serverUnread.isNotEmpty() || serverMentions.isNotEmpty() || serverPinned != null) {
                 preferencesStore.updateOverlay(account.id) { current ->
                     current.copy(
                         mutedPeers = current.mutedPeers + serverMuted,
                         markedUnreadPeers = current.markedUnreadPeers + serverUnread,
-                        pinnedPeers = if (serverPinned.isEmpty()) current.pinnedPeers else current.pinnedPeers + serverPinned,
+                        pinnedPeers = serverPinned ?: current.pinnedPeers,
                         unreadMentions = current.unreadMentions + serverMentions,
                     )
                 }
             }
+        }
+        // Presence for the peers on this page: dialog rows show online/last seen next to the preview.
+        val userPeerIds = response.dialogsList.filter { it.peer.type == 1 }.map { it.peer.id }
+        if (userPeerIds.isNotEmpty()) activeSession()?.let { fresh ->
+            refreshPresence(fresh, userPeerIds) { uid -> userHashes[uid] ?: users[uid]?.accessHash ?: 0L }
         }
         response.dialogsCount
     }
@@ -370,12 +508,24 @@ internal class DefaultMessengerRepository(
     override suspend fun refreshFolders() {
         val session = activeSession() ?: return
         val account = session.account
-        val archived = runCatching { session.messaging.folderDialogs(folderId = 0, archiveFilter = 1) }
-            .getOrDefault(emptyList())
-            .filter { it.peer.type in 1..2 }
-            .map { "${it.peer.type}:${it.peer.id}" }
-            .toSet()
-        preferencesStore.updateOverlay(account.id) { it.copy(archivedPeers = archived) }
+        // Archived dialogs come from LoadDialogs with the documented archiveFilter enum (1 = archived
+        // only). LoadFolderDialogs targets custom folders and must never be used to rebuild the
+        // archived set: an empty/ignored folder id returns every dialog and hides the whole list.
+        val archived = runCatching { session.messaging.dialogs(before = -1, archiveFilter = 1) }
+            .getOrNull()
+            ?.dialogsList
+            ?.filter { it.peer.type in 1..2 }
+            ?.map { "${it.peer.type}:${it.peer.id}" }
+            ?.toSet()
+        if (archived != null) {
+            // Safety guard: a server that ignores the filter would answer with the *entire* visible
+            // list; applying that would make every chat vanish from "All". Accept the snapshot only
+            // when it leaves at least one active dialog behind.
+            val activeKeys = dao.conversations(account.id).first().map { it.peerKey }.toSet()
+            if (activeKeys.isEmpty() || archived.intersect(activeKeys).size < activeKeys.size) {
+                preferencesStore.updateOverlay(account.id) { it.copy(archivedPeers = archived) }
+            }
+        }
         val response = runCatching { session.messaging.loadFolders() }.getOrNull() ?: return
         mutableFolders.update { response.foldersList.map { folder ->
             ChatFolder(
@@ -435,19 +585,21 @@ internal class DefaultMessengerRepository(
 
     override suspend fun setDialogPinned(peer: Peer, pinned: Boolean) {
         val session = activeSession() ?: error("No account")
+        val exType = resolveExPeerType(session, peer)
         preferencesStore.updateOverlay(session.account.id) {
             it.copy(pinnedPeers = if (pinned) it.pinnedPeers + peer.key else it.pinnedPeers - peer.key)
         }
-        safely { session.messaging.setDialogPinned(peer, pinned) }
+        safely { session.messaging.setDialogPinned(peer, pinned, exType) }
         dirtyDialogs.tryEmit(Unit)
     }
 
     override suspend fun setDialogArchived(peer: Peer, archived: Boolean) {
         val session = activeSession() ?: error("No account")
+        val exType = resolveExPeerType(session, peer)
         preferencesStore.updateOverlay(session.account.id) {
             it.copy(archivedPeers = if (archived) it.archivedPeers + peer.key else it.archivedPeers - peer.key)
         }
-        safely { session.messaging.setDialogArchived(peer, archived) }
+        safely { session.messaging.setDialogArchived(peer, archived, exType) }
         dirtyDialogs.tryEmit(Unit)
     }
 
@@ -507,6 +659,18 @@ internal class DefaultMessengerRepository(
         val userHashes = response.userPeersList.associate { it.uid to it.accessHash }
         response.usersList.forEach { recordUserMeta(account.id, it, userHashes[it.id] ?: 0L) }
         response.groupsList.forEach { recordGroupMeta(account.id, it) }
+        // Hydrate names/avatars for senders the history page did not describe, then refresh presence
+        // for them plus the direct peer itself.
+        val unknownSenders = response.historyList
+            .map { it.senderUid }
+            .filter { uid -> uid != 0 && uid != account.id && !userNames.containsKey("${account.id}:$uid") }
+            .distinct()
+        if (unknownSenders.isNotEmpty()) safely { hydrateUsers(session, unknownSenders) }
+        val presenceIds = buildList {
+            if (peer.kind == 1) += peer.id
+            += unknownSenders
+        }
+        if (presenceIds.isNotEmpty()) safely { refreshPresence(session, presenceIds) { uid -> userHashes[uid] ?: 0L } }
         gate.mutex.withLock {
             if (auth.account.value == account) database.withTransaction {
                 response.historyList.forEach { merge(it.entity(account.id, peer.key)) }
@@ -617,7 +781,16 @@ internal class DefaultMessengerRepository(
         }
     }
 
-    override suspend fun sendMedia(peer: Peer, payload: UploadPayload, caption: String, reply: ChatMessage?) {
+    override suspend fun sendMedia(peer: Peer, payload: UploadPayload, caption: String, reply: ChatMessage?) =
+        sendMediaWithProgress(peer, payload, caption, reply)
+
+    override suspend fun sendMediaWithProgress(
+        peer: Peer,
+        payload: UploadPayload,
+        caption: String,
+        reply: ChatMessage?,
+        onProgress: (Float) -> Unit,
+    ) {
         val session = activeSession() ?: error("No account")
         val exPeerType = resolveExPeerType(session, peer)
         val thumbInfo = if (payload.kind == AttachmentKind.Photo) generateFastThumbnail(payload.bytes) else FastThumb()
@@ -628,13 +801,11 @@ internal class DefaultMessengerRepository(
         } else {
             payload
         }
-        val uploaded = session.files.upload(session.account.id, enrichedPayload, peer, session.token, exPeerType)
-        val ownerAccessHash = if (exPeerType == ExPeerKind.CHANNEL) peer.id.toLong() else session.account.id.toLong()
+        val uploaded = session.files.upload(session.account.id, enrichedPayload, peer, session.token, exPeerType, onProgress)
         val content = FilesApi.documentMessage(
             uploaded = uploaded,
             payload = enrichedPayload,
             caption = caption,
-            accessHash = ownerAccessHash,
             thumbnail = thumbInfo.bytes,
             thumbWidth = thumbInfo.thumbWidth,
             thumbHeight = thumbInfo.thumbHeight,
@@ -644,7 +815,9 @@ internal class DefaultMessengerRepository(
         retry(peer, rid)
     }
 
-    override suspend fun downloadMedia(attachment: Attachment): String {
+    override suspend fun downloadMedia(attachment: Attachment): String = downloadMedia(attachment) {}
+
+    override suspend fun downloadMedia(attachment: Attachment, onProgress: (Float) -> Unit): String {
         val session = activeSession() ?: error("No account")
         val root = mediaRoot ?: File(System.getProperty("java.io.tmpdir"), "bale-media")
         val target = File(File(root, session.account.id.toString()), "${attachment.fileId}_${FilesApi.sanitizeFileName(attachment.name)}")
@@ -657,7 +830,7 @@ internal class DefaultMessengerRepository(
             }
             return target.absolutePath
         }
-        val bytes = session.files.download(attachment, session.token)
+        val bytes = session.files.download(attachment, session.token, onProgress)
         return cacheLocalBytes(session.account.id, attachment.fileId, attachment.name, bytes)
     }
 
@@ -949,6 +1122,7 @@ internal class DefaultMessengerRepository(
                 width = location?.width ?: 0,
                 height = location?.height ?: 0,
                 animated = collection.animated.value || entry.format == 2,
+                format = entry.format,
             )
         } + collection.stickersV2List.map { entry ->
             StickerItem(
@@ -1465,6 +1639,18 @@ internal class DefaultMessengerRepository(
         val response = session.directory.allStories()
         val userIds = response.userStoriesList.map { it.ownerUserId }.distinct()
         hydrateUsers(session, userIds)
+        val channelIds = response.channelStoriesList
+            .map { it.exPeer.id.takeIf { id -> id != 0 } ?: it.ownerUserId }
+            .filter { id -> id != 0 && !groupTitles.containsKey("${account.id}:$id") }
+            .distinct()
+        if (channelIds.isNotEmpty()) {
+            safely {
+                channelIds.chunked(METADATA_PAGE_SIZE).forEach { chunk ->
+                    val peers = chunk.map { GroupPeer.newBuilder().setGroupId(it).build() }
+                    session.messaging.groups(peers).groupsList.forEach { recordGroupMeta(account.id, it) }
+                }
+            }
+        }
         val stories = response.userStoriesList.filter { !it.isHidden }.map { story ->
             val media = if (story.storyContent.hasMedia() && story.storyContent.media.hasFileLocation()) {
                 val location = story.storyContent.media.fileLocation
@@ -1509,7 +1695,9 @@ internal class DefaultMessengerRepository(
             StoryItem(
                 id = story.id,
                 ownerId = channelId,
-                ownerTitle = userNames["${account.id}:$channelId"] ?: "Channel $channelId",
+                ownerTitle = groupTitles["${account.id}:$channelId"]
+                    ?: userNames["${account.id}:$channelId"]
+                    ?: "Channel $channelId",
                 text = "",
                 createdAt = story.createdAt,
                 myReaction = story.reaction.value,
@@ -1572,6 +1760,7 @@ internal class DefaultMessengerRepository(
     }
 
     private suspend fun applyUpdate(update: Update, session: Long) {
+        mutableLastPushAt.value = System.currentTimeMillis()
         val account = auth.account.value ?: return
         val mutedPeers = preferencesStore.overlayFor(account.id).mutedPeers
         var notifyTitle: String? = null
@@ -1584,10 +1773,15 @@ internal class DefaultMessengerRepository(
                 if (update.hasMessage()) {
                     val m = update.message
                     val key = "${m.peer.type}:${m.peer.id}"
+                    if (m.senderUid != 0 && m.senderUid != account.id && !userNames.containsKey("${account.id}:${m.senderUid}")) {
+                        pendingSenderIds += m.senderUid
+                        pendingSenders.tryEmit(m.senderUid)
+                    }
                     val history = History.newBuilder().setRid(m.rid).setDate(m.date).setSenderUid(m.senderUid).setMessage(m.message)
                     if (m.hasQuotedMessage()) history.setQuotedMessage(m.quotedMessage)
                     val built = history.build()
                     merge(built.entity(account.id, key))
+                    bumpConversation(account, m.peer.type, m.peer.id, m.date, built, incoming = m.senderUid != 0 && m.senderUid != account.id)
                     if (built.pollMessageOrNull()?.pollId?.let { it != 0L } == true && m.peer.type in 1..2) {
                         incomingPollPeer = Peer(m.peer.id, m.peer.type, dao.conversation(account.id, key)?.accessHash ?: 0L)
                     }
@@ -1600,7 +1794,12 @@ internal class DefaultMessengerRepository(
                 if (update.hasMessages()) {
                     val m = update.messages
                     val key = "${m.peer.type}:${m.peer.id}"
+                    if (m.field18.senderUid != 0 && m.field18.senderUid != account.id && !userNames.containsKey("${account.id}:${m.field18.senderUid}")) {
+                        pendingSenderIds += m.field18.senderUid
+                        pendingSenders.tryEmit(m.field18.senderUid)
+                    }
                     merge(m.field18.entity(account.id, key))
+                    bumpConversation(account, m.peer.type, m.peer.id, m.field18.date, m.field18, incoming = m.field18.senderUid != 0 && m.field18.senderUid != account.id)
                     if (m.field18.pollMessageOrNull()?.pollId?.let { it != 0L } == true && m.peer.type in 1..2) {
                         incomingPollPeer = Peer(m.peer.id, m.peer.type, dao.conversation(account.id, key)?.accessHash ?: 0L)
                     }
@@ -1660,8 +1859,107 @@ internal class DefaultMessengerRepository(
         if (session != socket.sessionId || auth.account.value != account) return
         if (notifyTitle != null && notifyText != null) notifier?.show(notifyId, notifyTitle!!, notifyText!!)
         incomingPollPeer?.let { targetPeer -> scope.launch { safely { refreshPolls(targetPeer) } } }
-        if (update.hasUserOnline()) mutableOnline.update { it + update.userOnline.uid }
-        if (update.hasUserOffline()) mutableOnline.update { it - update.userOffline.uid }
+        if (update.hasUserOnline()) {
+            val m = update.userOnline
+            if (m.uid != 0) {
+                mutableOnline.update { it + m.uid }
+                mutablePresence.update { it + (m.uid to (it[m.uid] ?: PeerPresence()).copy(online = true, lastSeenUnknown = false)) }
+            }
+        }
+        if (update.hasUserOffline()) {
+            val m = update.userOffline
+            if (m.uid != 0) {
+                mutableOnline.update { it - m.uid }
+                mutablePresence.update { it + (m.uid to (it[m.uid] ?: PeerPresence()).copy(online = false)) }
+            }
+        }
+        if (update.hasUserLastSeen()) {
+            val m = update.userLastSeen
+            if (m.uid != 0) {
+                mutableOnline.update { it - m.uid }
+                mutablePresence.update {
+                    it + (m.uid to (it[m.uid] ?: PeerPresence()).copy(
+                        online = false,
+                        lastSeenEpochSec = m.date,
+                        lastSeenUnknown = false,
+                        unknownLevel = 0,
+                    ))
+                }
+            }
+        }
+        if (update.hasUserLastSeenUnknown()) {
+            val m = update.userLastSeenUnknown
+            if (m.uid != 0) {
+                mutableOnline.update { it - m.uid }
+                mutablePresence.update {
+                    it + (m.uid to (it[m.uid] ?: PeerPresence()).copy(
+                        online = false,
+                        lastSeenUnknown = true,
+                        unknownLevel = m.value,
+                    ))
+                }
+            }
+        }
+        if (update.hasGroupOnline()) {
+            val m = update.groupOnline
+            if (m.groupId != 0) mutableGroupOnline.update { it + (m.groupId to m.count.coerceAtLeast(0)) }
+        }
+        if (update.hasUserNameChanged()) {
+            val m = update.userNameChanged
+            if (m.uid != 0 && m.name.isNotBlank()) {
+                userNames.put("${account.id}:${m.uid}", m.name)
+                peerMetaVersion.update { it + 1 }
+                dao.renamePeer(account.id, "1:${m.uid}", m.name)
+            }
+        }
+        if (update.hasUserAvatarChanged()) {
+            val m = update.userAvatarChanged
+            if (m.uid != 0 && m.hasAvatar()) {
+                m.avatar.toRefOrNull()?.let { ref -> peerAvatars["${account.id}:1:${m.uid}"] = ref }
+                    ?: peerAvatars.remove("${account.id}:1:${m.uid}")
+                peerMetaVersion.update { it + 1 }
+            }
+        }
+        if (update.hasPinnedDialogsChanged() && update.pinnedDialogsChanged.folderId == 0) {
+            // The server pushes the complete pinned set of the default folder after every change.
+            val pinned = update.pinnedDialogsChanged.pinnedPeersList
+                .filter { it.type in 1..4 }
+                .map { peerKey(it) }
+                .toSet()
+            preferencesStore.updateOverlay(account.id) { it.copy(pinnedPeers = pinned) }
+        }
+        if (update.hasDialogArchiveStatus()) {
+            val m = update.dialogArchiveStatus
+            val keys = m.exPeersList.map { peerKey(it) }.toSet()
+            if (keys.isNotEmpty()) {
+                preferencesStore.updateOverlay(account.id) { current ->
+                    current.copy(
+                        archivedPeers = if (m.isArchived) current.archivedPeers + keys else current.archivedPeers - keys,
+                    )
+                }
+            }
+        }
+        if (update.hasChatArchive()) {
+            val m = update.chatArchive
+            if (m.peer.id != 0) {
+                val key = "${if (m.peer.type == 1) 1 else 2}:${m.peer.id}"
+                preferencesStore.updateOverlay(account.id) { current ->
+                    current.copy(
+                        archivedPeers = if (m.getIs()) current.archivedPeers + key else current.archivedPeers - key,
+                    )
+                }
+            }
+        }
+        if (update.hasChatShow()) {
+            // ChatShow(is=true) un-hides a chat in every folder: it can no longer be archived.
+            val m = update.chatShow
+            if (m.peer.id != 0 && m.getIs()) {
+                val key = "${if (m.peer.type == 1) 1 else 2}:${m.peer.id}"
+                preferencesStore.updateOverlay(account.id) { current ->
+                    if (key in current.archivedPeers) current.copy(archivedPeers = current.archivedPeers - key) else current
+                }
+            }
+        }
         if (update.hasTyping()) {
             val m = update.typing
             if (m.uid != account.id) typing.update {
@@ -1746,5 +2044,5 @@ internal class DefaultMessengerRepository(
         try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { /* user retry/reconnect remains available; no private payload logging */ }
     }
 
-    companion object { const val OLDER = -2L }
+    companion object { const val OLDER = -2L; const val METADATA_PAGE_SIZE = 100 }
 }

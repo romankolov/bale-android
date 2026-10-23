@@ -107,9 +107,22 @@ internal fun StoriesPane(
     onPostTextStory: (String) -> Unit,
     onReactStory: (String, String) -> Unit,
     onDeleteStory: (String) -> Unit,
+    avatars: Map<Long, String> = emptyMap(),
+    onEnsureAvatars: (List<AvatarRef?>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
+    // One tray per author: the owner header carries the resolved name and avatar.
+    val grouped = remember(stories) { stories.groupBy { it.ownerId }.toList() }
+    LaunchedEffect(stories) {
+        val refs = grouped.mapNotNull { (_, items) -> items.firstOrNull()?.avatar } +
+            stories.mapNotNull { story ->
+                story.media?.let { media ->
+                    if (media.fileId != 0L) AvatarRef(media.fileId, media.accessHash) else null
+                }
+            }
+        onEnsureAvatars(refs.take(40))
+    }
     Column(modifier.fillMaxHeight().padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.nav_stories), style = MaterialTheme.typography.headlineLarge)
@@ -137,9 +150,29 @@ internal fun StoriesPane(
             Text(stringResource(R.string.no_stories), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp))
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(stories, key = { it.id }) { story ->
-                val thumbBitmap = remember(story.id, story.media) {
-                    story.media?.thumbnail?.let { decodeSampledBitmap(it, 512) }
+            grouped.forEach { (ownerId, ownerStories) ->
+            item(key = "story_owner_$ownerId") {
+                val owner = ownerStories.first()
+                Row(
+                    Modifier.fillMaxWidth().testTag("story_owner_$ownerId"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    BaleAvatar(avatar = owner.avatar, paths = avatars, label = owner.ownerTitle.ifBlank { "User $ownerId" }, size = 40.dp)
+                    Column {
+                        Text(owner.ownerTitle.ifBlank { "User $ownerId" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            stringResource(R.string.story_count, ownerStories.size),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            items(ownerStories, key = { it.id }) { story ->
+                val thumbBitmap = remember(story.id, story.media, avatars) {
+                    val cached = story.media?.fileId?.let { id -> avatars[id] }?.let { decodeSampledFileBitmap(it, 512) }
+                    cached ?: story.media?.thumbnail?.let { decodeSampledBitmap(it, 512) }
                 }
                 Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -173,6 +206,7 @@ internal fun StoriesPane(
                         }
                     }
                 }
+            }
             }
         }
     }

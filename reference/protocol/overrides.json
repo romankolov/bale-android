@@ -206,5 +206,46 @@
       ],
       "evidence": "bale-start.zip: sticker collection v2 entries are repeated Field422 messages at wire tag 42 (field 5)."
     }
+  },
+  "StickerMessage": {
+    "3": {
+      "original": [
+        "image512",
+        "bytes",
+        false
+      ],
+      "replacement": [
+        "image512",
+        "ImageLocation",
+        false
+      ],
+      "evidence": "bale-start.zip: index.fe3fa18088.js:12450 encodes image512 with the $.rF ImageLocation codec (module exports rF: T, {fileLocation,width,height,fileSize}); the stub proto's bytes type is a simplification."
+    },
+    "4": {
+      "original": [
+        "image256",
+        "bytes",
+        false
+      ],
+      "replacement": [
+        "image256",
+        "ImageLocation",
+        false
+      ],
+      "evidence": "bale-start.zip: index.fe3fa18088.js:12450 encodes image256 with the same $.rF ImageLocation codec; matches Collections.Field265.image256: ImageLocation."
+    },
+    "8": {
+      "original": [
+        "animation",
+        "bytes",
+        false
+      ],
+      "replacement": [
+        "animation",
+        "ImageLocation",
+        false
+      ],
+      "evidence": "bale-start.zip: index.fe3fa18088.js:12450 encodes animation with the $.rF ImageLocation codec (animated stickers reference a stored file, never raw bytes)."
+    }
   }
 }

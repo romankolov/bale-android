@@ -261,4 +261,12 @@
     <string name="banned_members_title">Removed users</string>
     <string name="load_shared_media">Shared media</string>
     <string name="privacy_unknown">Not shared</string>
+    <string name="last_seen_at">last seen %1$s</string>
+    <string name="last_seen_recently">last seen recently</string>
+    <string name="last_seen_week">last seen within a week</string>
+    <string name="last_seen_month">last seen within a month</string>
+    <string name="members_online_count">%1$d online</string>
+    <string name="downloading_percent">Downloading… %1$d%%</string>
+    <string name="uploading_percent">Uploading %1$s… %2$d%%</string>
+    <string name="story_count">%1$d stories</string>
 </resources>

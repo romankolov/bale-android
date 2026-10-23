@@ -38,6 +38,8 @@ data class ViewerState(
     val transcribing: Boolean = false,
     val transcript: String? = null,
     val transcriptFailed: Boolean = false,
+    /** Fractional download progress (0f..1f) while `busy`. */
+    val progress: Float = 0f,
 ) {
     val attachment get() = message.attachment
     val isImage: Boolean get() = message.attachment?.mimeType?.startsWith("image/") == true
@@ -89,6 +91,22 @@ data class VotersState(
 
 /** Quick-pick delays offered in the schedule sheet, in minutes. */
 internal val SCHEDULE_PRESET_MINUTES = listOf(10L, 30L, 60L, 180L, 1_440L)
+
+/** Coarse presence text shown under dialog titles and in the chat header. */
+enum class PresenceLabel { None, Online, LastSeenAt, LastSeenRecently, LastSeenWeek, LastSeenMonth, LastSeenLongAgo }
+
+internal fun presenceLabelFor(presence: ai.bale.client.domain.PeerPresence?): PresenceLabel = when {
+    presence == null -> PresenceLabel.None
+    presence.online -> PresenceLabel.Online
+    presence.lastSeenEpochSec > 0 -> PresenceLabel.LastSeenAt
+    presence.lastSeenUnknown -> when (presence.unknownLevel) {
+        1 -> PresenceLabel.LastSeenRecently
+        2 -> PresenceLabel.LastSeenWeek
+        3 -> PresenceLabel.LastSeenMonth
+        else -> PresenceLabel.None
+    }
+    else -> PresenceLabel.None
+}
 
 /**
  * First absolute URL in a message. Only trailing sentence punctuation is removed, so links that

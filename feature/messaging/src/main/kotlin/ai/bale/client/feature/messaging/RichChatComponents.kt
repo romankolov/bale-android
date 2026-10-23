@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlin.math.roundToInt
 import java.io.File
 import java.time.Instant
 import java.time.ZoneId
@@ -93,6 +94,37 @@ fun BaleAvatar(
         }
     }
 }
+
+/** "Online" / "Last seen …" line under dialog titles and in the chat header. */
+@Composable
+fun PresenceText(
+    presence: ai.bale.client.domain.PeerPresence?,
+    modifier: Modifier = Modifier,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.labelMedium,
+) {
+    val label = when (presenceLabelFor(presence)) {
+        PresenceLabel.Online -> stringResource(R.string.online_status)
+        PresenceLabel.LastSeenAt -> stringResource(R.string.last_seen_at, seenStamp(presence?.lastSeenEpochSec ?: 0L))
+        PresenceLabel.LastSeenRecently -> stringResource(R.string.last_seen_recently)
+        PresenceLabel.LastSeenWeek -> stringResource(R.string.last_seen_week)
+        PresenceLabel.LastSeenMonth -> stringResource(R.string.last_seen_month)
+        else -> null
+    }
+    if (label == null) return
+    Text(
+        label,
+        modifier = modifier,
+        style = style,
+        color = if (presence?.online == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+private val seenStampFormatter: DateTimeFormatter = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT, FormatStyle.SHORT)
+
+private fun seenStamp(epochSeconds: Long): String =
+    Instant.ofEpochSecond(epochSeconds).atZone(ZoneId.systemDefault()).let { seenStampFormatter.format(it) }
 
 /** Rounded pill button reused by the filter strip, pickers and report reasons. */
 @Composable
@@ -258,7 +290,28 @@ fun MediaViewerOverlay(
                 }
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     when {
-                        state.busy -> CircularProgressIndicator(color = Color.White)
+                        state.busy -> Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.testTag("viewer_download_progress"),
+                        ) {
+                            if (state.progress > 0f) {
+                                CircularProgressIndicator(
+                                    progress = { state.progress.coerceIn(0f, 1f) },
+                                    color = Color.White,
+                                    trackColor = Color.White.copy(alpha = 0.24f),
+                                )
+                            } else {
+                                CircularProgressIndicator(color = Color.White)
+                            }
+                            if (state.progress > 0f) {
+                                Text(
+                                    stringResource(R.string.downloading_percent, (state.progress * 100).roundToInt()),
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                        }
                         state.failed -> Text(stringResource(R.string.viewer_failed), color = Color.White)
                         state.isImage -> {
                             val bitmap = remember(state.path) { decodeSampledFileBitmap(state.path, 1600) }
@@ -458,6 +511,8 @@ fun PickerOverlay(
     onSendGif: (SavedGif) -> Unit,
     onRemoveGif: (SavedGif) -> Unit,
     onDismiss: () -> Unit,
+    avatars: Map<Long, String> = emptyMap(),
+    onStickerVisible: (StickerItem) -> Unit = {},
 ) {
     val mode = state.mode ?: PickerMode.Stickers
     ModalBottomSheet(onDismissRequest = onDismiss, modifier = Modifier.testTag("picker_sheet")) {
@@ -486,14 +541,17 @@ fun PickerOverlay(
                             Text(pack.name, style = MaterialTheme.typography.labelLarge)
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 items(pack.stickers, key = { it.id }) { sticker ->
+                                    LaunchedEffect(sticker) { onStickerVisible(sticker) }
                                     Surface(
                                         onClick = { onSendSticker(sticker) },
                                         shape = RoundedCornerShape(14.dp),
                                         color = MaterialTheme.colorScheme.surfaceContainerLow,
                                         modifier = Modifier.size(64.dp).testTag("sticker_${pack.id}_${sticker.id}"),
                                     ) {
-                                        val preview = remember(sticker) {
-                                            if (sticker.previewBytes.isNotEmpty()) decodeSampledBitmap(sticker.previewBytes, 128) else null
+                                        val preview = remember(sticker, avatars) {
+                                            val cached = if (sticker.fileId != 0L) avatars[sticker.fileId] else null
+                                            cached?.let { decodeSampledFileBitmap(it, 128) }
+                                                ?: if (sticker.previewBytes.isNotEmpty()) decodeSampledBitmap(sticker.previewBytes, 128) else null
                                         }
                                         if (preview != null) {
                                             Image(preview, null, Modifier.fillMaxSize(), contentScale = ContentScale.Inside)

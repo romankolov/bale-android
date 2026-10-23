@@ -25,6 +25,8 @@ class MessengerViewModel @Inject constructor(
     val account = auth.account
     val connection = messenger.connection
     val onlineUsers = messenger.onlineUsers
+    val peerPresence = messenger.peerPresence
+    val groupOnlineCounts = messenger.groupOnlineCounts
     val conversations = messenger.conversations().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val mutableSection = MutableStateFlow(AppSection.Chats)
@@ -89,6 +91,19 @@ class MessengerViewModel @Inject constructor(
     private val acknowledgedReads = mutableMapOf<String, Long>()
 
     init {
+        // Staleness fallback: if the socket believes it is connected but has been quiet for too
+        // long, re-poll the dialog page and the open chat so the UI never waits on a manual
+        // refresh. While live pushes flow, lastPushAt keeps moving and this loop does nothing.
+        viewModelScope.launch {
+            while (isActive) {
+                delay(15_000)
+                if (connection.value != Connection.Connected) continue
+                if (System.currentTimeMillis() - messenger.lastPushAt.value > PUSH_STALE_MS) quiet {
+                    messenger.refreshConversations()
+                    selected.value?.let { peer -> messenger.loadHistory(peer) }
+                }
+            }
+        }
         viewModelScope.launch {
             combine(selected, visibleRead, connection, account) { peer, date, state, owner ->
                 if (peer != null && date != null && state == Connection.Connected && owner != null) Triple(owner.id, peer, date) else null
@@ -244,23 +259,42 @@ class MessengerViewModel @Inject constructor(
         }
     }
 
+    private val mutableUploadProgress = MutableStateFlow<Float?>(null)
+    val uploadProgress = mutableUploadProgress.asStateFlow()
+
+    private val mutableDownloadProgress = MutableStateFlow<Map<Long, Float>>(emptyMap())
+    val downloadProgress = mutableDownloadProgress.asStateFlow()
+
     fun sendAttachment(payload: UploadPayload, caption: String = "") {
         val peer = selected.value ?: return
         val reply = composer.value.reply
         mutableComposer.value = ComposerState()
         operation {
             mutableUploading.value = payload.name
+            mutableUploadProgress.value = 0f
             try {
-                messenger.sendMedia(peer, payload, caption, reply)
+                messenger.sendMediaWithProgress(peer, payload, caption, reply) { progress ->
+                    mutableUploadProgress.value = progress.coerceIn(0f, 1f)
+                }
             } finally {
                 mutableUploading.value = null
+                mutableUploadProgress.value = null
             }
         }
     }
 
     fun downloadAttachment(attachment: Attachment, onReady: ((String) -> Unit)? = null) {
         operation {
-            val path = messenger.downloadMedia(attachment)
+            if (attachment.fileId != 0L) mutableDownloadProgress.update { it + (attachment.fileId to 0f) }
+            val path = try {
+                messenger.downloadMedia(attachment) { progress ->
+                    if (attachment.fileId != 0L) {
+                        mutableDownloadProgress.update { current -> current + (attachment.fileId to progress.coerceIn(0f, 1f)) }
+                    }
+                }
+            } finally {
+                if (attachment.fileId != 0L) mutableDownloadProgress.update { it - attachment.fileId }
+            }
             if (path.isNotBlank()) {
                 if (attachment.fileId != 0L) mutableDownloaded.update { it + (attachment.fileId to path) }
                 onReady?.invoke(path)
@@ -631,9 +665,13 @@ class MessengerViewModel @Inject constructor(
         mutableViewer.value = ViewerState(message = message)
         viewModelScope.launch {
             try {
-                val path = messenger.downloadMedia(attachment)
+                val path = messenger.downloadMedia(attachment) { progress ->
+                    if (viewer.value?.message?.rid == message.rid) {
+                        mutableViewer.update { current -> current?.copy(progress = progress.coerceIn(0f, 1f)) ?: current }
+                    }
+                }
                 if (viewer.value?.message?.rid == message.rid) {
-                    mutableViewer.value = ViewerState(message = message, path = path, busy = false, failed = path.isBlank())
+                    mutableViewer.value = ViewerState(message = message, path = path, busy = false, failed = path.isBlank(), progress = 1f)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -675,7 +713,15 @@ class MessengerViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 when (mode) {
-                    PickerMode.Stickers -> mutablePicker.value = StickerPickerState(mode = mode, packs = messenger.loadStickerPacks())
+                    PickerMode.Stickers -> {
+                        val packs = messenger.loadStickerPacks()
+                        mutablePicker.value = StickerPickerState(mode = mode, packs = packs)
+                        // Warm the same on-disk cache used for avatars so the grid can render previews.
+                        ensureAvatars(packs.asSequence().flatMap { it.stickers.asSequence() }
+                            .filter { it.fileId != 0L }
+                            .map { AvatarRef(it.fileId, it.accessHash) }
+                            .toList())
+                    }
                     PickerMode.Gifs -> mutablePicker.value = StickerPickerState(mode = mode, gifs = messenger.loadSavedGifs())
                 }
             } catch (cancelled: CancellationException) {
@@ -979,5 +1025,6 @@ class MessengerViewModel @Inject constructor(
     companion object {
         private const val PAGE_SIZE = 50
         private const val AVATAR_WARM_BATCH = 12
+        private const val PUSH_STALE_MS = 45_000L
     }
 }

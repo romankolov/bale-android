@@ -34,6 +34,7 @@ class FilesApi(
         peer: Peer?,
         token: String?,
         exPeerType: Int = peer?.kind ?: ExPeerKind.PRIVATE,
+        onProgress: (Float) -> Unit = {},
     ): UploadedFile {
         require(payload.bytes.isNotEmpty() && payload.bytes.size <= MAX_MEDIA_BYTES) { "Invalid media size" }
         val mime = payload.mimeType.ifBlank { "application/octet-stream" }
@@ -59,13 +60,67 @@ class FilesApi(
         val resp = Files_GetNasimFileUploadUrl_Response.parseFrom(
             rpc.rpc(FILES_SERVICE, "GetNasimFileUploadUrl", req, session)
         )
-        if (resp.fileId == 0L || resp.url.isBlank()) throw ProtocolException("Missing upload URL")
-        val target = validateUrl(resp.url)
-        putBytes(target, payload.bytes, token)
-        return UploadedFile(resp.fileId, safeName, mime, payload.bytes.size, uploaderUid)
+        if (resp.fileId == 0L) throw ProtocolException("Missing upload file id")
+        // A `duplicate` answer means the server already stores these bytes; no PUT is required.
+        if (!resp.duplicate) {
+            if (resp.url.isBlank()) throw ProtocolException("Missing upload URL")
+            val target = validateUrl(resp.url)
+            val chunk = resp.chunkSize
+            if (chunk > 0 && payload.bytes.size > chunk) uploadChunks(target, payload.bytes, chunk, token, onProgress)
+            else {
+                onProgress(0.02f)
+                putBytes(target, payload.bytes, token)
+                onProgress(1f)
+            }
+        } else {
+            onProgress(1f)
+        }
+        // Fresh uploads are referenced by fileId alone; inventing an access hash is rejected for documents.
+        return UploadedFile(resp.fileId, safeName, mime, payload.bytes.size)
     }
 
-    suspend fun download(attachment: Attachment, token: String?): ByteArray {
+    /** Chunked PUTs carry `chunk`/`no` headers (0-based index, total count) and end with an empty confirming PUT. */
+    private suspend fun uploadChunks(url: HttpUrl, data: ByteArray, chunkSize: Int, token: String?, onProgress: (Float) -> Unit) =
+        withContext(Dispatchers.IO) {
+            val total = (data.size + chunkSize - 1) / chunkSize
+            for (index in 0 until total) {
+                val from = index * chunkSize
+                val to = minOf(from + chunkSize, data.size)
+                val slice = data.copyOfRange(from, to)
+                val request = Request.Builder()
+                    .url(url)
+                    .header("Origin", BaleEndpoint.ORIGIN)
+                    .header("User-Agent", BaleEndpoint.USER_AGENT)
+                    .header("chunk", index.toString())
+                    .header("no", total.toString())
+                    .apply { if (!token.isNullOrBlank()) header("Cookie", "access_token=$token") }
+                    .put(slice.toRequestBody(UPLOAD_CONTENT_TYPE))
+                    .build()
+                http.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful && response.code != HTTP_CONFLICT) {
+                        throw IOException("Upload chunk $index/$total failed with HTTP ${response.code}")
+                    }
+                }
+                onProgress((index + 1).toFloat() / (total + 1).toFloat())
+            }
+            val finalRequest = Request.Builder()
+                .url(url)
+                .header("Origin", BaleEndpoint.ORIGIN)
+                .header("User-Agent", BaleEndpoint.USER_AGENT)
+                .header("chunk", total.toString())
+                .header("no", total.toString())
+                .apply { if (!token.isNullOrBlank()) header("Cookie", "access_token=$token") }
+                .put(ByteArray(0).toRequestBody(UPLOAD_CONTENT_TYPE))
+                .build()
+            http.newCall(finalRequest).execute().use { response ->
+                if (!response.isSuccessful && response.code != HTTP_CONFLICT) {
+                    throw IOException("Upload confirmation failed with HTTP ${response.code}")
+                }
+            }
+            onProgress(1f)
+        }
+
+    suspend fun download(attachment: Attachment, token: String?, onProgress: (Float) -> Unit = {}): ByteArray {
         require(attachment.fileId != 0L) { "Missing file ID" }
         val location = FileLocation.newBuilder()
             .setFileId(attachment.fileId)
@@ -93,7 +148,8 @@ class FilesApi(
             http.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throw IOException("Media download HTTP ${response.code}")
                 val body = response.body ?: throw IOException("Empty media body")
-                val out = ByteArrayOutputStream()
+                val expected = body.contentLength()
+                val out = ByteArrayOutputStream(if (expected in 1..MAX_MEDIA_BYTES) expected.toInt() else 8_192)
                 val buffer = ByteArray(8_192)
                 body.byteStream().use { stream ->
                     var total = 0
@@ -103,6 +159,7 @@ class FilesApi(
                         total += read
                         if (total > MAX_MEDIA_BYTES) throw ProtocolException("Media exceeds maximum allowed size")
                         out.write(buffer, 0, read)
+                        if (expected > 0) onProgress((total.toFloat() / expected.toFloat()).coerceIn(0f, 1f))
                     }
                 }
                 out.toByteArray()
@@ -122,7 +179,8 @@ class FilesApi(
                 .put(data.toRequestBody(UPLOAD_CONTENT_TYPE))
                 .build()
             http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw IOException("Upload HTTP ${response.code}")
+                // 409 means the file id is already stored (e.g. a retried PUT); treat it as delivered.
+                if (!response.isSuccessful && response.code != HTTP_CONFLICT) throw IOException("Upload HTTP ${response.code}")
             }
         }
 
@@ -142,6 +200,7 @@ class FilesApi(
         const val SEND_AUDIO = 5
         const val SEND_DOCUMENT = 6
         const val SEND_STICKER = 7
+        const val HTTP_CONFLICT = 409
         private val UPLOAD_CONTENT_TYPE = "multipart/form-data".toMediaType()
 
         fun defaultExtensionForMime(mimeType: String): String = when (mimeType.lowercase().substringBefore(';').trim()) {
@@ -179,24 +238,27 @@ class FilesApi(
             thumbWidth: Int = 0,
             thumbHeight: Int = 0,
         ): Message2 {
-            val ext = Extra2.newBuilder().apply {
-                when (payload.kind) {
-                    AttachmentKind.Photo -> setDocumentExPhoto(DocumentExPhoto.newBuilder().setW(payload.width).setH(payload.height))
-                    AttachmentKind.Video -> setDocumentExVideo(DocumentExVideo.newBuilder().setW(payload.width).setH(payload.height).setDuration(payload.durationSeconds))
-                    AttachmentKind.Voice -> setDocumentExVoice(DocumentExVoice.newBuilder().setDuration(payload.durationSeconds))
-                    AttachmentKind.Audio -> setDocumentExAudio(DocumentExAudio.newBuilder().setDuration(payload.durationSeconds).setTrack(uploaded.name))
-                    else -> Unit
-                }
-            }.build()
+            // Documents and stickers carry no `ext` on the web wire at all; only media kinds set it.
+            val ext: Extra2? = when (payload.kind) {
+                AttachmentKind.Photo -> Extra2.newBuilder()
+                    .setDocumentExPhoto(DocumentExPhoto.newBuilder().setW(payload.width).setH(payload.height)).build()
+                AttachmentKind.Video -> Extra2.newBuilder()
+                    .setDocumentExVideo(DocumentExVideo.newBuilder().setW(payload.width).setH(payload.height).setDuration(payload.durationSeconds)).build()
+                AttachmentKind.Voice -> Extra2.newBuilder()
+                    .setDocumentExVoice(DocumentExVoice.newBuilder().setDuration(payload.durationSeconds)).build()
+                AttachmentKind.Audio -> Extra2.newBuilder()
+                    .setDocumentExAudio(DocumentExAudio.newBuilder().setDuration(payload.durationSeconds).setTrack(uploaded.name)).build()
+                else -> null
+            }
             return Message2.newBuilder().setDocumentMessage(
                 DocumentMessage.newBuilder()
                     .setFileId(uploaded.fileId)
-                    .setAccessHash(accessHash)
+                    .apply { if (accessHash != 0L) setAccessHash(accessHash) }
                     .setFileSize(uploaded.sizeBytes)
                     .setName(uploaded.name)
                     .setMimeType(uploaded.mimeType)
-                    .setExt(ext)
                     .apply {
+                        if (ext != null) setExt(ext)
                         if (thumbnail.isNotEmpty()) {
                             setThumb(Thumb.newBuilder().setW(thumbWidth).setH(thumbHeight).setThumb(ByteString.copyFrom(thumbnail)))
                         }

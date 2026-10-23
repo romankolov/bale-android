@@ -2,7 +2,7 @@
 
 An independent, native Android Bale messenger client built with **Jetpack Compose**, **Material 3 Expressive**, **MVVM / Clean Architecture**, **Hilt**, **Google Protobuf Java-Lite**, **Retrofit + OkHttp WebSockets**, **Room**, and **Paging 3**. Minimum SDK: **Android 10 (API 29)**; target/compile SDK: **Android 16 (API 36)**.
 
-> **Status: `1.0.0-rc1` release candidate — every capability below is CI-verified on Android 10 (API 29) and Android 16 (API 36) emulators, and file uploads, forwarded messages, polls, folders, avatars, stickers, scheduling, threads, Mini-Apps and moderation are wired against the live Bale RPC surface.**
+> **Status: `1.0.0-rc2` release candidate — every capability below is CI-verified on Android 10 (API 29) and Android 16 (API 36) emulators. Beyond the rc1 feature set, live-device hardening landed real avatars & names everywhere, server-shaped uploads for every file class, sticker sends by id, online/last-seen presence, per-user story trays, Ogg/Opus voice notes, upload/download progress, pin/archive list integrity and socket-live chat lists.**
 > Voice/video calls, financial/banking operations, third-party FCM push-token server delivery, end-to-end encryption, and production (Play) release signing remain explicitly deferred or outside scope. Release-candidate APKs are signed with the debug key so they install over an existing test build.
 
 Every push publishes two installable artifacts on **[Pull Request #1](https://github.com/romankolov/bale-android/pull/1)**: `development-apk` (debug, line-numbered stacks) and `release-candidate-apk` (R8-minified, resource-shrunk, same signing key).
