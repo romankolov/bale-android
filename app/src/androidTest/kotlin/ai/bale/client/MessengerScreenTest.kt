@@ -91,6 +91,7 @@ class MessengerScreenTest {
             assertEquals(99L, repository.queuedReply?.rid)
         }
         compose.onNodeWithTag("message-composer").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("answer from UI").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("answer from UI").assertIsDisplayed()
     }
 

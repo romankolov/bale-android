@@ -518,7 +518,7 @@ private fun ChatPane(
     }
 
     Column(modifier.fillMaxHeight()) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text(stringResource(R.string.back)) }
             Column(Modifier.weight(1f).clickable(onClick = onInspect)) {
                 Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -567,7 +567,8 @@ private fun ChatPane(
                 }
             }
         }
-        if (composer.edit == null) {
+        val input = if (composer.edit != null) editingDraft else draft
+        if (composer.edit == null && (input.isBlank() || recordingVoice)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (recordingVoice) {
                     Text(stringResource(R.string.recording_voice), Modifier.weight(1f), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
@@ -589,8 +590,7 @@ private fun ChatPane(
                 }
             }
         }
-        val input = if (composer.edit != null) editingDraft else draft
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
             OutlinedTextField(input, {
                 if (it.length <= 4096) {
                     if (composer.edit != null) editingDraft = it else draft = it
@@ -600,6 +600,7 @@ private fun ChatPane(
                 shape = RoundedCornerShape(28.dp), placeholder = { Text(stringResource(R.string.message_hint)) })
             Button(onClick = {
                 val submitted = input
+                chatKeyboard?.hide()
                 if (composer.edit == null) followNewest = true
                 onSend(submitted) { if (composer.edit == null && draft == submitted) draft = "" }
             }, enabled = input.isNotBlank() && !queuing, modifier = Modifier.heightIn(min = 56.dp)) {
@@ -731,7 +732,6 @@ private fun MessageBubble(
 private fun SearchDialog(state: SearchState, hasChat: Boolean, onSearch: (String, Boolean) -> Unit, onClose: () -> Unit, onOpen: (SearchHit) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var currentOnly by rememberSaveable { mutableStateOf(hasChat) }
-    val keyboard = LocalSoftwareKeyboardController.current
     AlertDialog(onDismissRequest = onClose, title = { Text(stringResource(R.string.search_messages)) }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(query, { if (it.length <= 256) query = it }, label = { Text(stringResource(R.string.search_messages)) }, singleLine = true, modifier = Modifier.testTag("server-search-query"))
