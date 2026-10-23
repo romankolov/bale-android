@@ -67,6 +67,11 @@ internal class DefaultMessengerRepository(
     private val mutableLastPushAt = MutableStateFlow(0L)
     override val lastPushAt: StateFlow<Long> = mutableLastPushAt.asStateFlow()
     private var onlineAnnouncedSession = 0L
+    @Volatile private var foregroundPeer: Peer? = null
+
+    override fun noteForegroundPeer(peer: Peer?) {
+        foregroundPeer = peer
+    }
     private val inFlightAvatars: MutableSet<Long> = Collections.newSetFromMap(ConcurrentHashMap())
 
     override val onlineUsers = mutableOnline.asStateFlow()
@@ -308,6 +313,20 @@ internal class DefaultMessengerRepository(
                 delay(1_000)
                 val now = System.currentTimeMillis()
                 typing.update { peers -> peers.mapValues { (_, at) -> at.filterValues { it > now } }.filterValues { it.isNotEmpty() } }
+            }
+        }
+        scope.launch {
+            // Push-staleness watchdog: the socket should keep lastPushAt moving. If it has been
+            // quiet while still reporting Connected, re-poll the dialogs and the open chat once per
+            // window so the list never depends on a manual pull-to-refresh.
+            while (isActive) {
+                delay(10_000)
+                if (socket.state.value != Connection.Connected) continue
+                if (System.currentTimeMillis() - mutableLastPushAt.value <= PUSH_STALE_MS) continue
+                mutableLastPushAt.value = System.currentTimeMillis()
+                val foreground = foregroundPeer
+                safely { refreshConversations() }
+                if (foreground != null) safely { loadHistory(foreground) }
             }
         }
         scope.launch {
@@ -2044,5 +2063,5 @@ internal class DefaultMessengerRepository(
         try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { /* user retry/reconnect remains available; no private payload logging */ }
     }
 
-    companion object { const val OLDER = -2L; const val METADATA_PAGE_SIZE = 100 }
+    companion object { const val OLDER = -2L; const val METADATA_PAGE_SIZE = 100; const val PUSH_STALE_MS = 45_000L }
 }

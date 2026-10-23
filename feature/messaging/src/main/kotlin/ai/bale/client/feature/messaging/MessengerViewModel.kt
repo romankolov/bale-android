@@ -91,19 +91,9 @@ class MessengerViewModel @Inject constructor(
     private val acknowledgedReads = mutableMapOf<String, Long>()
 
     init {
-        // Staleness fallback: if the socket believes it is connected but has been quiet for too
-        // long, re-poll the dialog page and the open chat so the UI never waits on a manual
-        // refresh. While live pushes flow, lastPushAt keeps moving and this loop does nothing.
-        viewModelScope.launch {
-            while (isActive) {
-                delay(15_000)
-                if (connection.value != Connection.Connected) continue
-                if (System.currentTimeMillis() - messenger.lastPushAt.value > PUSH_STALE_MS) quiet {
-                    messenger.refreshConversations()
-                    selected.value?.let { peer -> messenger.loadHistory(peer) }
-                }
-            }
-        }
+        // The repository's push-staleness watchdog reloads the chat that is currently on screen;
+        // this just tells it which one that is.
+        viewModelScope.launch { selected.collect { peer -> messenger.noteForegroundPeer(peer) } }
         viewModelScope.launch {
             combine(selected, visibleRead, connection, account) { peer, date, state, owner ->
                 if (peer != null && date != null && state == Connection.Connected && owner != null) Triple(owner.id, peer, date) else null
@@ -1025,6 +1015,5 @@ class MessengerViewModel @Inject constructor(
     companion object {
         private const val PAGE_SIZE = 50
         private const val AVATAR_WARM_BATCH = 12
-        private const val PUSH_STALE_MS = 45_000L
     }
 }

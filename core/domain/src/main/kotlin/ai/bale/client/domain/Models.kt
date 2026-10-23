@@ -430,6 +430,8 @@ interface MessengerRepository {
     suspend fun react(peer: Peer, message: ChatMessage, code: String, remove: Boolean)
     suspend fun searchMessages(query: String, peer: Peer? = null): SearchPage
     suspend fun setTyping(peer: Peer, active: Boolean)
+    /** Peer currently open on screen; the staleness poller reloads its history while set. */
+    fun noteForegroundPeer(peer: Peer?) = Unit
     suspend fun sendMedia(peer: Peer, payload: UploadPayload, caption: String = "", reply: ChatMessage? = null) = Unit
     /** Upload with fractional progress callbacks (0f..1f); the no-callback form stays available. */
     suspend fun sendMediaWithProgress(
