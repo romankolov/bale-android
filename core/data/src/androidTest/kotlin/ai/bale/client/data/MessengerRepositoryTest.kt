@@ -108,8 +108,8 @@ class MessengerRepositoryTest {
                 "GetFullGroup" -> {
                     val req = request as Groups_GetFullGroup_Request
                     Groups_GetFullGroup_Response.newBuilder()
-                        .setGroup(FullGroup.newBuilder().setId(req.group.groupId).setAccessHash(req.group.accessHash)
-                            .setGroupType(if (req.group.groupId == 777) 1 else 0).setTitle("Channel 777"))
+                        .setFullGroup(FullGroup.newBuilder().setId(req.peer.groupId).setAccessHash(req.peer.accessHash)
+                            .setGroupType(if (req.peer.groupId == 777) 1 else 0).setTitle("Channel 777"))
                         .build().toByteArray()
                 }
                 "JoinGroup" -> Groups_JoinGroup_Response.newBuilder()
@@ -290,7 +290,7 @@ class MessengerRepositoryTest {
             "Deck",
         )
         val uploadReq = rpc.requests.last { it.first == "GetNasimFileUploadUrl" }.second as Files_GetNasimFileUploadUrl_Request
-        assertEquals(777, uploadReq.uploaderUid.value)
+        assertEquals(777L, uploadReq.uid)
         assertEquals(3, uploadReq.exPeer.type)
         val sentDocReq = rpc.requests.last { it.first == "SendMessage" }.second as Messaging_SendMessage_Request
         assertEquals(3, sentDocReq.peer.type)

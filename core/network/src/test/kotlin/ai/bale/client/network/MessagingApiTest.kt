@@ -148,7 +148,7 @@ class MessagingApiTest {
         assertEquals(777L, api.createPoll(peer, "Lunch?", listOf("Kebab", "Rice"), anonymous = true, multiple = true, now = 5000L, exPeerType = 3))
         assertEquals("bale.poll.v1.Poll", rpc.service)
         assertEquals("CreatePoll", rpc.method)
-        assertEquals(3, (rpc.request as Poll_CreatePoll_Request).peer.type)
+        assertEquals(3, (rpc.request as Poll_CreatePoll_Request).expeer.type)
 
         rpc.response = Poll_Vote_Response.newBuilder().setPollResult(PollResult.newBuilder().setVotersCount(3)).build().toByteArray()
         val result = api.votePoll(777L, listOf(0, 1), retract = false, now = 6000L)

@@ -64,7 +64,7 @@ class FilesAndDirectoryApiTest {
             assertEquals(901L, uploaded.fileId)
             assertEquals(7L, uploaded.ownerAccessHash)
             val firstUploadReq = rpc.calls.single().third as Files_GetNasimFileUploadUrl_Request
-            assertEquals(7, firstUploadReq.uploaderUid.value)
+            assertEquals(7L, firstUploadReq.uid)
             assertEquals(1, firstUploadReq.exPeer.type)
 
             val putReq = server.takeRequest()
@@ -83,9 +83,9 @@ class FilesAndDirectoryApiTest {
             val pdfPayload = UploadPayload("report", "application/pdf", byteArrayOf(9, 9, 9), AttachmentKind.Document)
             val chanUploaded = api.upload(7, pdfPayload, Peer(777, 2, 999), "fixture-jwt", exPeerType = ExPeerKind.CHANNEL)
             val chanUploadReq = rpc.calls.last().third as Files_GetNasimFileUploadUrl_Request
-            assertEquals(777, chanUploadReq.uploaderUid.value)
+            assertEquals(777L, chanUploadReq.uid)
             assertEquals(ExPeerKind.CHANNEL, chanUploadReq.exPeer.type)
-            assertEquals("report.pdf", chanUploadReq.fileInfo.name.value)
+            assertEquals("report.pdf", chanUploadReq.name)
             assertEquals(777L, chanUploaded.ownerAccessHash)
 
             val thumb = byteArrayOf(11, 22, 33)
