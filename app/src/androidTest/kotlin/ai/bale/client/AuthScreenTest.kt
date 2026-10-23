@@ -8,6 +8,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Rule
@@ -26,7 +27,7 @@ class AuthScreenTest {
         val model = AuthViewModel(repository)
         compose.setContent { BaleTheme { AuthScreen(model) } }
         compose.onNodeWithText("Phone number, including country code").performTextInput("+989123456789")
-        compose.onNodeWithText("Send verification code").performClick()
-        compose.onNodeWithText("Check your messages").assertIsDisplayed()
+        compose.onNodeWithText("Send verification code").performScrollTo().performClick()
+        compose.onNodeWithText("Check your messages").performScrollTo().assertIsDisplayed()
     }
 }

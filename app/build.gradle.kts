@@ -34,6 +34,9 @@ android {
         // SDK 36 is this project's deliberate, tested baseline. SDK 37 needs a
         // coordinated AGP/SDK/device migration, not a silent target-only bump.
         disable += "OldTargetApi"
+        // Version-availability advisories are handled by Dependabot, not build
+        // correctness checks: a new release must not break an unchanged build.
+        disable += setOf("GradleDependency", "AndroidGradlePluginVersion")
     }
 }
 kotlin { jvmToolchain(17) }

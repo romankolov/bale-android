@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import org.junit.Rule
 import org.junit.Test
 
@@ -18,6 +19,6 @@ class AppLaunchTest {
             compose.onAllNodesWithText("A little closer.").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithText("A little closer.").assertIsDisplayed()
-        compose.onNodeWithText("Send verification code").assertIsDisplayed()
+        compose.onNodeWithText("Send verification code").performScrollTo().assertIsDisplayed()
     }
 }
