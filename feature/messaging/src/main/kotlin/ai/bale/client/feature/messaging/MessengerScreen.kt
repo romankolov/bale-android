@@ -217,7 +217,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     if (search.open) SearchDialog(search, selected != null, viewModel::searchServer, viewModel::closeSearch, viewModel::openSearchHit)
 
     Surface(Modifier.fillMaxSize()) {
-        Column(Modifier.safeDrawingPadding().imePadding()) {
+        Column(Modifier.safeDrawingPadding()) {
             if (error) Notice(stringResource(R.string.action_failed), Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             BoxWithConstraints(Modifier.weight(1f)) {

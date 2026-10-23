@@ -21,8 +21,9 @@ import com.google.protobuf.MessageLite
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -99,7 +100,10 @@ class MessengerRepositoryTest {
             database = database,
             scope = scope,
             gate = AccountGate(),
-            http = OkHttpClient(),
+            http = OkHttpClient.Builder().addInterceptor { chain ->
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                    .code(200).message("OK").body("".toResponseBody()).build()
+            }.build(),
             mediaRoot = mediaDir,
             tokenProvider = { "test-jwt" },
             allowLoopbackHttpForTests = true,
@@ -229,26 +233,19 @@ class MessengerRepositoryTest {
     }
 
     @Test fun mediaUploadCachesAttachmentAndPollsAndJoinLinksPersistState() = runBlocking<Unit> {
-        val server = MockWebServer()
-        server.enqueue(MockResponse().setResponseCode(200))
-        server.start()
-        try {
-            rpc.uploadUrl = server.url("/put-media").toString()
-            val payload = UploadPayload("voice.m4a", "audio/mp4a-latm", byteArrayOf(7, 7, 7), AttachmentKind.Voice, durationSeconds = 4)
-            repository.sendMedia(peer, payload, "Voice note")
-            val cached = repository.downloadMedia(Attachment(707L, 0L, 0, "voice.m4a", "audio/mp4a-latm", 3, AttachmentKind.Voice))
-            assertTrue(File(cached).isFile)
+        rpc.uploadUrl = "https://files.bale.ai/upload/707"
+        val payload = UploadPayload("voice.m4a", "audio/mp4a-latm", byteArrayOf(7, 7, 7), AttachmentKind.Voice, durationSeconds = 4)
+        repository.sendMedia(peer, payload, "Voice note")
+        val cached = repository.downloadMedia(Attachment(707L, 0L, 0, "voice.m4a", "audio/mp4a-latm", 3, AttachmentKind.Voice))
+        assertTrue(File(cached).isFile)
 
-            repository.createPoll(peer, "Ship?", listOf("Yes", "Now"))
-            val pollMsg = database.messenger().messages(7, peer.key).first().last().domain()
-            assertEquals("Ship?", pollMsg.poll?.question)
-            repository.votePoll(peer, pollMsg, listOf(0), retract = false)
-            assertEquals(1, row(pollMsg.rid).domain().poll?.totalVoters)
+        repository.createPoll(peer, "Ship?", listOf("Yes", "Now"))
+        val pollMsg = database.messenger().messages(7, peer.key).first().last().domain()
+        assertEquals("Ship?", pollMsg.poll?.question)
+        repository.votePoll(peer, pollMsg, listOf(0), retract = false)
+        assertEquals(1, row(pollMsg.rid).domain().poll?.totalVoters)
 
-            val joined = repository.joinInviteOrHandle("https://ble.ir/join/abc_TOKEN-12")
-            assertEquals("2:515", joined?.key)
-        } finally {
-            server.shutdown()
-        }
+        val joined = repository.joinInviteOrHandle("https://ble.ir/join/abc_TOKEN-12")
+        assertEquals("2:515", joined?.key)
     }
 }

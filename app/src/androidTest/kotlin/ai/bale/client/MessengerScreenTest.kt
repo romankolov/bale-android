@@ -111,7 +111,7 @@ class MessengerScreenTest {
         val repository = show(initialOpen = false, initialMessage = pollMsg)
         compose.onNodeWithText("Contacts").performClick()
         compose.onNodeWithText("Mina Contact").assertIsDisplayed()
-        compose.onNodeWithText("Chats").performClick()
+        compose.onNodeWithText("Conversations").performClick()
         compose.onNodeWithText("Test conversation").performClick()
         compose.onNodeWithText("Today (2)").performClick()
         compose.runOnIdle {

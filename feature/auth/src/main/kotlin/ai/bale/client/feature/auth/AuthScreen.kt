@@ -32,7 +32,7 @@ fun AuthScreen(viewModel: AuthViewModel = hiltViewModel()) {
         AuthStep.Registration -> Triple(R.string.registration_title, R.string.registration_subtitle, R.string.name_label)
     }
     Surface(Modifier.fillMaxSize()) {
-        Box(Modifier.safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
+        Box(Modifier.safeDrawingPadding(), contentAlignment = Alignment.Center) {
             Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(28.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 Surface(shape = RoundedCornerShape(32.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(88.dp)) {
                     Box(contentAlignment = Alignment.Center) { Text("ب", fontSize = 48.sp, color = MaterialTheme.colorScheme.onPrimaryContainer) }
