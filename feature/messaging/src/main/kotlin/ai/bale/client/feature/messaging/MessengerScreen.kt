@@ -567,19 +567,27 @@ private fun ChatPane(
                 }
             }
         }
+        var showAttachBar by rememberSaveable(peer.key) { mutableStateOf(false) }
         val input = if (composer.edit != null) editingDraft else draft
-        if (composer.edit == null && (input.isBlank() || recordingVoice)) {
+        if (composer.edit == null && (showAttachBar || recordingVoice)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (recordingVoice) {
                     Text(stringResource(R.string.recording_voice), Modifier.weight(1f), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
                     TextButton(onClick = { onFinishVoice(false) }) { Text(stringResource(R.string.cancel)) }
-                    Button(onClick = { followNewest = true; onFinishVoice(true) }) { Text(stringResource(R.string.send_voice)) }
+                    Button(onClick = { followNewest = true; showAttachBar = false; onFinishVoice(true) }) { Text(stringResource(R.string.send_voice)) }
                 } else {
                     TextButton(onClick = {
+                        showAttachBar = false
                         photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                     }) { Text(stringResource(R.string.attach_media)) }
-                    TextButton(onClick = { documentPicker.launch(arrayOf("*/*")) }) { Text(stringResource(R.string.attach_file)) }
-                    TextButton(onClick = onOpenPollDialog) { Text(stringResource(R.string.poll_short)) }
+                    TextButton(onClick = {
+                        showAttachBar = false
+                        documentPicker.launch(arrayOf("*/*"))
+                    }) { Text(stringResource(R.string.attach_file)) }
+                    TextButton(onClick = {
+                        showAttachBar = false
+                        onOpenPollDialog()
+                    }) { Text(stringResource(R.string.poll_short)) }
                     TextButton(onClick = {
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             onStartVoice()
@@ -591,7 +599,14 @@ private fun ChatPane(
             }
         }
         val chatKeyboard = LocalSoftwareKeyboardController.current
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+            if (composer.edit == null) {
+                FilledTonalButton(
+                    onClick = { showAttachBar = !showAttachBar },
+                    modifier = Modifier.heightIn(min = 56.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp),
+                ) { Text("+") }
+            }
             OutlinedTextField(input, {
                 if (it.length <= 4096) {
                     if (composer.edit != null) editingDraft = it else draft = it
