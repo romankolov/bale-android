@@ -9,7 +9,9 @@ app ──> feature/auth, feature/messaging, core/designsystem
 ```
 
 Domain is JVM-only and Android/protobuf/Retrofit/Room-free. Repository contracts
-expose domain objects and Flow/StateFlow. ViewModels convert user intent to state
+expose domain objects and Flow/StateFlow. PagingData from the JVM-only AndroidX
+Paging common artifact is the one additional pagination contract; Android UI,
+Room PagingSource and protobuf types remain outside domain. ViewModels convert user intent to state
 and invoke contracts; Compose collects with lifecycle awareness. Hilt binds the
 application data runtime to interfaces. HTTP/WebSocket/storage implementation
 types are not exposed in the application DI signatures.
@@ -22,8 +24,12 @@ for the sake of a layer. There is no Python/WebView backend in the Android app.
 
 The split archive protos fail type resolution. Generate one namespace from the
 supplied deduplicated runtime schema, maintaining field numbers, primitive types
-and repeated flags. Keep original placeholder names/opaque bytes; do not infer
-missing semantics. The original ZIP and runtime JSON provide provenance.
+and repeated flags, except provenance-backed corrections in
+`reference/protocol/overrides.json`. Each override asserts the original field
+before changing it, so upstream schema drift fails generation. Packed deletion
+dates are verified against the supplied JavaScript; forward destination IDs are
+informed by the supplied independent aiobale request model and still need live
+verification. Other unknown placeholder fields remain opaque. The original ZIP and runtime JSON provide provenance.
 Generated Java-lite code is a build output, not committed source. Both standalone
 generation and Android Gradle generation/compilation pass in CI; see the concrete
 source snapshot and test evidence in [VERIFICATION.md](VERIFICATION.md).
@@ -39,7 +45,10 @@ One application-scoped socket belongs to one saved account. The read loop routes
 responses by a monotonic int64 request ID; pending calls have timeouts and removal
 on cancellation. An independent heartbeat enforces pong deadlines. Reconnect
 uses capped exponential backoff with jitter; invalid sessions stop reconnecting.
-Incoming frames and HTTP bodies are bounded. Empty termination messages retain
+Incoming frames and HTTP bodies are bounded. Typed messaging calls capture an
+authenticated session epoch under the account gate. The transport checks that
+epoch while serializing send with start/stop. Updates carry their source epoch;
+the reducer rechecks it under the account gate before persistence. Empty termination messages retain
 field presence. Disconnect fails pending calls and does not replay them.
 
 Expected RPC errors are typed, while UI errors are intentionally sanitized.
@@ -65,9 +74,13 @@ Explicit retry reuses that rid. Reconnection alone does not resend a request wit
 an unknown server outcome. Incoming acknowledgements/history reconcile by rid.
 Pending rows surviving process death become retryable failures.
 
-Current limitations: no disk/paging policy, no migration beyond schema 1, no
-complete incremental update state, no full snapshot deletion reconciliation and
-no worker-based outbox. These are release blockers, not hidden implementation details.
+History uses Room-backed Paging 3 with 50-row pages and a 300-row retained-page
+budget, plus explicit server-history pagination. Schema 1→2 preserves old rows
+and adds optional protobuf History metadata/receipt flags; 2→3 adds durable
+delete tombstones, including deletes received before a message is cached.
+
+Current limitations: no disk-retention policy, no complete incremental update
+state, no full authoritative snapshot reconciliation and no worker-based outbox. These are release blockers, not hidden implementation details.
 
 ## UI/design system
 

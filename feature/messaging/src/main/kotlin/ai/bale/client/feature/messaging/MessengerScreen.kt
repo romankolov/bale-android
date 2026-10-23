@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -91,7 +92,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                     TextButton(onClick = { forwarding = message; action = null }) { Text(stringResource(R.string.forward_message)) }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         listOf("👍", "❤️", "😂", "😮", "😢").forEach { code ->
-                            TextButton(onClick = { viewModel.react(message, code, false); action = null }) { Text(code) }
+                            TextButton(onClick = { viewModel.react(message, code, false); action = null }, modifier = Modifier.weight(1f)) { Text(code) }
                         }
                     }
                 }
@@ -286,6 +287,7 @@ private fun ChatPane(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MessageBubble(
     message: ChatMessage, outgoing: Boolean, group: Boolean, onActions: (ChatMessage) -> Unit,
@@ -308,7 +310,7 @@ private fun MessageBubble(
                     else -> stringResource(R.string.unsupported_message)
                 }, style = MaterialTheme.typography.bodyLarge)
                 Text(formatTime(message.date) + if (message.edited) " · " + stringResource(R.string.edited_message) else "", style = MaterialTheme.typography.labelSmall)
-                if (message.reactions.isNotEmpty() && !message.deleted) Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (message.reactions.isNotEmpty() && !message.deleted) FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     message.reactions.take(5).forEach { reaction ->
                         SuggestionChip(onClick = { onReaction(message, reaction.code) }, label = { Text("${reaction.code} ${reaction.count}") })
                     }
@@ -331,13 +333,14 @@ private fun MessageBubble(
 private fun SearchDialog(state: SearchState, hasChat: Boolean, onSearch: (String, Boolean) -> Unit, onClose: () -> Unit, onOpen: (SearchHit) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var currentOnly by rememberSaveable { mutableStateOf(hasChat) }
+    val keyboard = LocalSoftwareKeyboardController.current
     AlertDialog(onDismissRequest = onClose, title = { Text(stringResource(R.string.search_messages)) }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(query, { if (it.length <= 256) query = it }, label = { Text(stringResource(R.string.search_messages)) }, singleLine = true, modifier = Modifier.testTag("server-search-query"))
             if (hasChat) Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(currentOnly, { currentOnly = it }); Text(stringResource(R.string.search_this_chat))
             }
-            Button(onClick = { onSearch(query, currentOnly && hasChat) }, enabled = query.isNotBlank() && !state.busy, modifier = Modifier.testTag("server-search-submit")) { Text(stringResource(R.string.search_messages)) }
+            Button(onClick = { keyboard?.hide(); onSearch(query, currentOnly && hasChat) }, enabled = query.isNotBlank() && !state.busy, modifier = Modifier.testTag("server-search-submit")) { Text(stringResource(R.string.search_messages)) }
             if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (state.failed) Text(stringResource(R.string.action_failed), color = MaterialTheme.colorScheme.error)
             state.page?.let { page ->

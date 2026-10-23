@@ -165,6 +165,16 @@ class MessengerRepositoryTest {
         withTimeout(10_000) { repository.typingUsers(peer).first { it.isNotEmpty() } }
         assertTrue(database.messenger().messages(8, peer.key).first().isEmpty())
     }
+    @Test fun deleteBeforeHistoryIsLoadedStillBlocksStaleMessageResurrection() = runBlocking {
+        val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
+        rpc.push(Update.newBuilder().setMessageDelete(MessageDelete.newBuilder().setPeer(p)
+            .setDates(Dates2.newBuilder().addDates(1000))).build())
+        rpc.push(Update.newBuilder().setTyping(Typing.newBuilder().setPeer(p).setUid(42)).build())
+        withTimeout(10_000) { repository.typingUsers(peer).first { it.isNotEmpty() } }
+        assertTrue(database.messenger().isDeleted(7, peer.key, 1000, 99))
+        seed()
+        assertTrue(database.messenger().messages(7, peer.key).first().isEmpty())
+    }
     @Test fun addAndRemoveReactionsPersistServerCounts() = runBlocking {
         seed()
         val message = row(99).domain()

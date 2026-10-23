@@ -3,6 +3,8 @@
 Scope agreed: full **messenger** first, Android 10+; proceed incrementally through
 all five stages. Calls and financial services remain explicitly deferred.
 Stages are acceptance gates, not promises that schema generation delivers parity.
+The user has reported a working initial real-account flow. The next implementation
+work is subdivided into [five remaining batches](IMPLEMENTATION_PLAN.md).
 
 ## 1 — Foundation, protocol audit and design system
 
@@ -18,7 +20,7 @@ Stages are acceptance gates, not promises that schema generation delivers parity
 - Gradle debug build, Android Lint and startup tests now pass in CI; complete
   design/accessibility acceptance remains outstanding.
 - Device/RTL/font-scaling/screen-reader review; design previews/screenshots.
-- Commit Room's generated v1 schema after the actual annotation processor runs.
+- Commit exported Room schema baselines and validate migration fixtures.
 
 **Exit:** reproducibly buildable shell and reviewed capability inventory.
 
@@ -28,6 +30,8 @@ Stages are acceptance gates, not promises that schema generation delivers parity
 - gRPC-web framing/error parsing and bounded response reads over Retrofit/OkHttp.
 - Phone → code → password/registration flows with explicit unsupported-mode errors.
 - Stable device UUID; Keystore AES-GCM session vault and local logout.
+- Initial real-account flow independently confirmed by the user (not a complete
+  live regression matrix).
 - WebSocket handshake, metadata, request correlation, cancellation/timeouts,
   heartbeat/pong deadlines, reconnect with jitter, unauthorized termination.
 - Token refresh scheduling while the process is connected.
@@ -49,6 +53,9 @@ Stages are acceptance gates, not promises that schema generation delivers parity
 - Initial dialog/history loading, manual older-history loading, text sending,
   stable-rid outbox, explicit retry, read RPC and basic incoming-message updates.
 - Local conversation-title filtering, adaptive phone/tablet chat screens.
+- Messaging batch: replies, edits/deletes/forwarding/reactions, server search
+  previews, read/typing reducers/UI, Room Paging 3, more-dialog loading, typed
+  session-bound RPCs, cache migrations and persistent deletion tombstones.
 - Draft cleared only after successful local enqueue; interrupted attempts recover
   as retryable failures. No automatic replay of ambiguous RPC outcomes.
 
@@ -56,9 +63,10 @@ Stages are acceptance gates, not promises that schema generation delivers parity
 - Basic Room/account-isolation/reconciliation tests pass on API 29 and 36.
   Migration baseline, full reconnect catch-up, update ordering/deduplication,
   deletion reconciliation and missed-update recovery remain outstanding.
-- Paging 3/RemoteMediator, complete dialog pagination, missing peer resolution.
-- Replies, edits/deletes/forwards, reactions, typing/presence, server search,
-  delivery/read ticks, archive/pin/mute and new-chat flows.
+- Finish server cursor/snapshot policies and test large histories/dialog lists.
+  Paging 3 uses explicit server-page loading, not a claimed RemoteMediator.
+- Live verification of the new messaging paths; search continuation/jump, full
+  reaction state, archive/pin/mute, complete presence and new-chat flows.
 - Persistent-work policy and WorkManager integration for eligible outbox work.
   Retries must be reconciled and idempotent, not blindly resent.
 

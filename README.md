@@ -6,7 +6,9 @@ An independent, native Android Bale client under development. **Android 10+ (API
 > [GitHub Actions verification passed](https://github.com/romankolov/bale-android/actions/runs/39882404720)
 > at source commit `57ea672`: debug APK, Android Lint, 23 unit tests, 10 protocol
 > checks, and six instrumentation tests on each of Android 10 and Android 16.
-> **Live Bale login/messaging and production readiness remain unverified.**
+> The user independently reports the initial real-account flow works. New
+> messaging actions and production readiness are **not** yet live-verified.
+> The current messaging-completeness batch is under CI verification.
 
 [Download the development APK artifact](https://github.com/romankolov/bale-android/actions/runs/39882404720/artifacts/12471416312)
 (unzip `app-debug.apk`; GitHub sign-in may be required). Fresh-runner debug signing
@@ -22,7 +24,8 @@ production release. Artifacts are subject to GitHub retention limits.
 4. Media and full messenger capabilities.
 5. Hardening, device testing and release.
 
-See [the roadmap and acceptance gates](docs/ROADMAP.md),
+See [the five remaining implementation batches](docs/IMPLEMENTATION_PLAN.md),
+[the original roadmap and acceptance gates](docs/ROADMAP.md),
 [current feature coverage](docs/CAPABILITIES.md), and the
 [699-RPC inventory](docs/rpc-coverage.csv). Calls and financial services are
 **deferred**, per the messenger-first scope decision. Generated models are not
@@ -31,7 +34,7 @@ counted as working features.
 ## Stack
 
 - Kotlin, Jetpack Compose, Material 3 **Expressive**, MVVM/unidirectional state flow.
-- Clean Architecture boundaries, Hilt, Coroutines/Flow, Room/KSP.
+- Clean Architecture boundaries, Hilt, Coroutines/Flow, Room/KSP and Paging 3.
 - Google protobuf Gradle plugin and generated **Java-lite** models.
 - Retrofit for the HTTP boundary, explicit gRPC-web framing, OkHttp WebSockets.
 - Gradle Kotlin DSL, version catalog, shared Android-library convention plugin.
@@ -52,10 +55,10 @@ access is required.
 ```sh
 # Set ANDROID_HOME or add sdk.dir=/path/to/Android/Sdk to ignored local.properties.
 ./gradlew :app:assembleDebug
-./gradlew :core:domain:test :core:network:test :feature:auth:testDebugUnitTest
+./gradlew :core:domain:test :core:network:test :core:data:testDebugUnitTest :feature:auth:testDebugUnitTest :feature:messaging:testDebugUnitTest
 ./gradlew :app:lintDebug :app:assembleDebugAndroidTest
 # With an Android 10+ emulator/device (English locale for current UI smoke test):
-./gradlew :app:connectedDebugAndroidTest
+./gradlew :app:connectedDebugAndroidTest :core:data:connectedDebugAndroidTest
 ```
 
 Debug APK output (after a successful build):
