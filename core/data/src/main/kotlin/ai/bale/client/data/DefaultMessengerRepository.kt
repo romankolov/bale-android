@@ -685,10 +685,7 @@ internal class DefaultMessengerRepository(
             .filter { uid -> uid != 0 && uid != account.id && !userNames.containsKey("${account.id}:$uid") }
             .distinct()
         if (unknownSenders.isNotEmpty()) safely { hydrateUsers(session, unknownSenders) }
-        val presenceIds = buildList {
-            if (peer.kind == 1) += peer.id
-            += unknownSenders
-        }
+        val presenceIds = (if (peer.kind == 1) listOf(peer.id) else emptyList()) + unknownSenders
         if (presenceIds.isNotEmpty()) safely { refreshPresence(session, presenceIds) { uid -> userHashes[uid] ?: 0L } }
         gate.mutex.withLock {
             if (auth.account.value == account) database.withTransaction {

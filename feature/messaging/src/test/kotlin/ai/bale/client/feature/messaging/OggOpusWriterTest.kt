@@ -19,11 +19,21 @@ class OggOpusWriterTest {
         return value
     }
 
-    @Test fun `crc of a completed page decodes to zero`() {
-        val page = OggOpusWriter.page(1, 0, 960L, listOf(ByteArray(80)))
-        assertEquals(0, OggOpusWriter.crc(page))
-        val big = OggOpusWriter.page(7, 12, 48_000L, List(30) { ByteArray(127) { b -> (it + b).toByte() } })
-        assertEquals(0, OggOpusWriter.crc(big))
+    private fun checksumValid(page: ByteArray): Boolean {
+        // libogg semantics: zero bytes 22..25, recompute, compare with the stored little-endian value.
+        val stored = intAt(page, 22)
+        val probe = page.copyOf()
+        for (offset in 22..25) probe[offset] = 0
+        return OggOpusWriter.crc(probe) == stored
+    }
+
+    @Test fun `crc matches the non-reflected 04c11db7 generator with zero init`() {
+        assertEquals(-0x36b78082, OggOpusWriter.crc("The quick brown fox jumps over the lazy dog".toByteArray()))
+    }
+
+    @Test fun `every emitted page carries a valid checksum`() {
+        assertTrue(checksumValid(OggOpusWriter.page(1, 0, 960L, listOf(ByteArray(80)))))
+        assertTrue(checksumValid(OggOpusWriter.page(7, 12, 48_000L, List(30) { ByteArray(127) { b -> (it + b).toByte() } })))
     }
 
     @Test fun `page framing carries capture pattern serial sequence and granule`() {
@@ -45,13 +55,13 @@ class OggOpusWriterTest {
         assertEquals(-1, page[27].toInt()) // 255
         assertEquals(0, page[28].toInt()) // terminator of the first packet
         assertEquals(3, page[29].toInt())
-        assertEquals(0, OggOpusWriter.crc(page))
+        assertTrue(checksumValid(page))
     }
 
     @Test fun `header pages set bos once and embed a valid opus head`() {
         val headers = OggOpusWriter.headerPages(serial = 42)
         // First page: 27-byte header + 1 lacing byte + the 19-byte OpusHead packet.
-        assertEquals(0, OggOpusWriter.crc(headers.copyOfRange(0, 27 + 1 + 19)))
+        assertTrue(checksumValid(headers.copyOfRange(0, 27 + 1 + 19)))
         assertTrue(headers[5].toInt() and 0x02 != 0)
         assertArrayEquals("OpusHead".toByteArray(), headers.copyOfRange(28, 36))
         assertEquals(1, headers[36].toInt()) // version
@@ -67,6 +77,6 @@ class OggOpusWriterTest {
         val page = OggOpusWriter.page(1, 9, 960L, emptyList(), endOfStream = true)
         assertEquals(0x04, page[5].toInt())
         assertEquals(27, page.size)
-        assertEquals(0, OggOpusWriter.crc(page))
+        assertTrue(checksumValid(page))
     }
 }

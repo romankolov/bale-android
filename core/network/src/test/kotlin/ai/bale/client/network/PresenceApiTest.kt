@@ -47,7 +47,7 @@ class PresenceApiTest {
 
     @Test fun `usersPresence dedupes ids and carries the subscribe flag`() = runTest {
         val rpc = StubRpc()
-        rpc.responder = {
+        rpc.responder = { _, _ ->
             Presence_GetUsersPresence_Response.newBuilder()
                 .addPresences(Presences.newBuilder().setUserOnline(UserOnline2.newBuilder().setPeer(UserPeers.newBuilder().setUid(42))).build())
                 .addPresences(
@@ -81,7 +81,7 @@ class PresenceApiTest {
 
     @Test fun `groupOnlineCount queries the group peer and parses the count`() = runTest {
         val rpc = StubRpc()
-        rpc.responder = { Presence_GetGroupOnlineCount_Response.newBuilder().setCount(12).build().toByteArray() }
+        rpc.responder = { _, _ -> Presence_GetGroupOnlineCount_Response.newBuilder().setCount(12).build().toByteArray() }
         val api = PresenceApi(rpc)
         assertEquals(12, api.groupOnlineCount(99, 555L))
         val request = rpc.calls.single().third as Presence_GetGroupOnlineCount_Request
