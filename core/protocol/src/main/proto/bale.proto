@@ -3299,11 +3299,11 @@ message Date2_Value {
 }
 
 message Dates {
-  repeated bytes dates = 1;
+  repeated int64 dates = 1;
 }
 
 message Dates2 {
-  repeated bytes dates = 1;
+  repeated int64 dates = 1;
 }
 
 message DefaultCardNo {

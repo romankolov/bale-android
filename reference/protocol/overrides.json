@@ -1,0 +1,16 @@
+{
+  "Dates": {
+    "1": {
+      "original": ["dates", "bytes", true],
+      "replacement": ["dates", "int64", true],
+      "evidence": "bale-start.zip: chal/pretty/index.fe3fa18088.js lines 9885-9917; Q.encode writes uint32(10).fork(), int64 for each date, join. Decoder accepts tag 8 or packed tag 10."
+    }
+  },
+  "Dates2": {
+    "1": {
+      "original": ["dates", "bytes", true],
+      "replacement": ["dates", "int64", true],
+      "evidence": "bale-start.zip: chal/pretty/index.fe3fa18088.js lines 14329-14361; ig.encode/ig.decode use the same packed int64 layout."
+    }
+  }
+}

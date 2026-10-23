@@ -20,14 +20,15 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
 
 /** One account/session owner. Never replays RPCs automatically after disconnect. */
-class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineScope, private val url: String = BaleEndpoint.SOCKET) {
+class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineScope, private val url: String = BaleEndpoint.SOCKET) : BaleRpc {
     private val mutableState = MutableStateFlow(Connection.Disconnected)
-    val state: StateFlow<Connection> = mutableState.asStateFlow()
+    override val state: StateFlow<Connection> = mutableState.asStateFlow()
     private val mutableUpdates = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
-    val updates: SharedFlow<ByteArray> = mutableUpdates.asSharedFlow()
+    override val updates: SharedFlow<ByteArray> = mutableUpdates.asSharedFlow()
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<ByteArray>>()
     private val counter = AtomicLong(0)
     private val lifecycle = Mutex()
+    private val sessionEpoch = AtomicLong(0)
     private var job: Job? = null
     @Volatile private var socket: WebSocket? = null
     private val metadata = Metadata.newBuilder().apply {
@@ -37,12 +38,14 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
     }.build()
 
     suspend fun start(token: String) = lifecycle.withLock {
+        sessionEpoch.incrementAndGet()
         job?.cancelAndJoin()
         socket?.cancel()
         mutableState.value = Connection.Connecting
         job = scope.launch { reconnect(token) }
     }
     suspend fun stop() = lifecycle.withLock {
+        sessionEpoch.incrementAndGet()
         job?.cancelAndJoin()
         job = null
         socket?.cancel()
@@ -50,20 +53,24 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
         failPending(IOException("Session closed"))
         mutableState.value = Connection.Disconnected
     }
-    suspend fun rpc(service: String, method: String, request: MessageLite): ByteArray {
+    override suspend fun rpc(service: String, method: String, request: MessageLite): ByteArray {
+        val epoch = sessionEpoch.get()
         withTimeout(15_000) {
             state.first { it == Connection.Connected || it == Connection.Unauthorized }
         }
         if (state.value == Connection.Unauthorized) throw RpcException(4401, "Session expired")
         val id = counter.incrementAndGet()
         val result = CompletableDeferred<ByteArray>()
-        pending[id] = result
         try {
             val frame = SocketRequest.newBuilder().setRequest(
                 RpcRequest.newBuilder().setService(service).setMethod(method)
                     .setPayload(ByteString.copyFrom(request.toByteArray())).setMetadata(metadata).setRequestId(id)
             ).build()
-            if (socket?.send(OkioBytes.of(*frame.toByteArray())) != true) throw IOException("Socket unavailable")
+            lifecycle.withLock {
+                if (epoch != sessionEpoch.get()) throw IOException("Session changed before request was sent")
+                pending[id] = result
+                if (socket?.send(OkioBytes.of(*frame.toByteArray())) != true) throw IOException("Socket unavailable")
+            }
             return withTimeout(20_000) { result.await() }
         } finally { pending.remove(id); result.cancel() }
     }

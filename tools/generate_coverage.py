@@ -9,8 +9,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 IMPLEMENTED = {
     'bale.auth.v1.Auth': {'StartPhoneAuth', 'ValidateCode', 'ValidatePassword', 'SignUp', 'GetJWTToken'},
-    'bale.messaging.v2.Messaging': {'LoadDialogs', 'LoadHistory', 'SendMessage', 'MessageRead'},
+    'bale.messaging.v2.Messaging': {'LoadDialogs', 'LoadHistory', 'SendMessage', 'MessageRead', 'UpdateMessage', 'DeleteMessage', 'ForwardMessages'},
+    'bale.abacus.v1.Abacus': {'MessageSetReaction', 'MessageRemoveReaction'},
+    'bale.search.v1.Search': {'SearchMessages'},
+    'bale.presence.v1.Presence': {'Typing', 'StopTyping'},
+    'bale.users.v1.Users': {'LoadUsers'},
+    'bale.groups.v1.Groups': {'LoadGroups'},
 }
+BUILD_STATUS = 'pending-ci'
 # Deferred per the user's messenger-first decision; not a claim of API viability.
 MESSENGER = {'bale.auth.v1.Auth', 'bale.messaging.v2.Messaging', 'bale.users.v1.Users',
              'bale.groups.v1.Groups', 'bale.v1.Files', 'bale.v1.Images', 'bale.search.v1.Search',
@@ -29,7 +35,7 @@ def render():
             writer.writerow([service, method, types['request'], types['response'],
                 'messenger' if service in MESSENGER else 'needs-triage-or-deferred',
                 'source-implemented' if method in IMPLEMENTED.get(service, set()) else 'not-implemented',
-                'passed-ci' if method in IMPLEMENTED.get(service, set()) else 'models-only', 'no'])
+                BUILD_STATUS if method in IMPLEMENTED.get(service, set()) else 'models-only', 'no'])
     return text.getvalue()
 
 
@@ -42,4 +48,4 @@ if __name__ == '__main__':
         assert path.read_text() == render(), 'Run python3 tools/generate_coverage.py'
     else:
         path.write_text(render())
-    print('RPC coverage inventory is up to date (699 RPCs; 9 source implementations).')
+    print(f'RPC coverage inventory is up to date (699 RPCs; {sum(map(len, IMPLEMENTED.values()))} source implementations).')

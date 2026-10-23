@@ -40,7 +40,7 @@ jobs:
       - name: Use hosted runner Android SDK
         run: echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
       - run: python3 tools/ci_exec.py ci-logs/sdk.log sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
-      - run: python3 tools/ci_exec.py ci-logs/gradle.log ./gradlew --console=plain --continue :core:domain:test :core:network:test :feature:auth:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest
+      - run: python3 tools/ci_exec.py ci-logs/gradle.log ./gradlew --console=plain --continue :core:domain:test :core:network:test :feature:auth:testDebugUnitTest :core:data:testDebugUnitTest :feature:messaging:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest
       - name: Summarize executed tests
         if: always()
         run: python3 tools/ci_test_summary.py

@@ -12,7 +12,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTO = ROOT / 'core/protocol/src/main/proto'
-SCHEMA = json.loads((ROOT / 'reference/protocol/schema.json').read_text())
+from generate_protocol import load_schema
+SCHEMA = load_schema()
 
 
 def varint(value):
@@ -105,6 +106,14 @@ class ProtocolTest(unittest.TestCase):
         decoded = bale.Messaging_SendMessage_Request.FromString(message.SerializeToString())
         self.assertEqual(rid, decoded.rid)
         self.assertEqual('سلام 👋 hello', decoded.message.textMessage.text)
+
+    def test_deletion_dates_are_packed_int64_not_allocated_byte_arrays(self):
+        dates = [1761177600000, 1761177600001]
+        expected = blob(1, b''.join(varint(date) for date in dates))
+        self.assertEqual(expected, bale.Dates(dates=dates).SerializeToString())
+        self.assertEqual(dates, list(bale.Dates2.FromString(expected).dates))
+        unpacked = b''.join(scalar(1, date) for date in dates)
+        self.assertEqual(dates, list(bale.Dates2.FromString(unpacked).dates))
 
     def test_unknown_fields_survive_roundtrip(self):
         raw = blob(55555, b'future')
