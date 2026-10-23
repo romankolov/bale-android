@@ -1065,7 +1065,8 @@ private fun MessageBubble(
                         Text(stringResource(R.string.thread_replies, message.repliesCount))
                     }
                 }
-                if (message.poll != null && message.poll.totalVoters > 0) {
+                val pollView = message.poll
+                if (pollView != null && pollView.totalVoters > 0) {
                     TextButton(onClick = { onShowPollVoters(message) }, modifier = Modifier.testTag("poll_voters_${message.rid}")) {
                         Text(stringResource(R.string.show_poll_voters))
                     }

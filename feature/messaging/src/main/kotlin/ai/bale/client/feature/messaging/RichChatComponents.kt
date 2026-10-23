@@ -752,6 +752,7 @@ fun ReportSheet(
         R.string.report_reason_other,
     )
     var reason by rememberSaveable { mutableStateOf("") }
+    val otherLabel = stringResource(R.string.report_reason_other)
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier.testTag("report_sheet"),
@@ -772,7 +773,7 @@ fun ReportSheet(
         },
         confirmButton = {
             TextButton(
-                onClick = { onSubmit(reason.ifBlank { stringResource(R.string.report_reason_other) }) },
+                onClick = { onSubmit(reason.ifBlank { otherLabel }) },
                 modifier = Modifier.testTag("report_submit"),
             ) { Text(stringResource(R.string.report_submit)) }
         },
