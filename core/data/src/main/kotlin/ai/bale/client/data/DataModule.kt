@@ -34,7 +34,7 @@ internal class DataRuntime(context: Context) {
         }.build()
     private val transport = AuthTransport(Retrofit.Builder().baseUrl(BaleEndpoint.HTTP).client(client).build().create(AuthHttpApi::class.java))
     private val socket = BaleSocket(client, scope)
-    private val database = Room.databaseBuilder(context, BaleDatabase::class.java, "bale.db").addMigrations(MIGRATION_1_2).build()
+    private val database = Room.databaseBuilder(context, BaleDatabase::class.java, "bale.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     private val gate = AccountGate()
     val auth: AuthRepository = DefaultAuthRepository(SessionVault(context), transport, socket, database, scope, gate)
     val messenger: MessengerRepository = DefaultMessengerRepository(auth, socket, database, scope, gate)

@@ -14,7 +14,7 @@ import javax.inject.Inject
 data class ComposerState(val reply: ChatMessage? = null, val edit: ChatMessage? = null)
 data class SearchState(val open: Boolean = false, val busy: Boolean = false, val page: SearchPage? = null, val failed: Boolean = false)
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 @HiltViewModel
 class MessengerViewModel @Inject constructor(
     private val messenger: MessengerRepository,

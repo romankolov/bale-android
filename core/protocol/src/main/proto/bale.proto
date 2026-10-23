@@ -7368,7 +7368,7 @@ message Messaging_FetchProtectedMessage_Response {
 
 message Messaging_ForwardMessages_Request {
   Peer3 peer = 1;
-  bytes field_16 = 2;
+  repeated int64 messageIds = 2;
   repeated QuotedMessageReference forwardedMessages = 3;
   google.protobuf.Int64Value groupedId = 4;
   bool hideSender = 5;

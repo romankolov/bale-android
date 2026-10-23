@@ -51,6 +51,39 @@ class BaleSocketTest {
             socket.stop(); scope.cancel(); client.dispatcher.executorService.shutdown(); client.connectionPool.evictAll(); server.shutdown()
         }
     }
+    @Test fun `waiting RPC from previous session is never sent by a new login`() = runBlocking {
+        val server = MockWebServer()
+        val received = java.util.concurrent.atomic.AtomicInteger(0)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, bytes: OkioBytes) {
+                val frame = SocketRequest.parseFrom(bytes.toByteArray())
+                val response = if (frame.hasHandshakeRequest()) SocketResponse.newBuilder().setHandshakeResponse(frame.handshakeRequest).build()
+                else {
+                    received.incrementAndGet()
+                    SocketResponse.newBuilder().setResponse(RpcResponse.newBuilder().setNumber(frame.request.requestId)
+                        .setResult(ByteString.copyFromUtf8("fresh"))).build()
+                }
+                webSocket.send(OkioBytes.of(*response.toByteArray()))
+            }
+        }))
+        server.start()
+        val client = OkHttpClient()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val socket = BaleSocket(client, scope, server.url("/ws/").toString())
+        try {
+            val stale = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { socket.rpc("test.Service", "OldAccount", Auth_GetJWTToken_Request.getDefaultInstance()) }
+            }
+            socket.start("fixture-new-session")
+            val error = withTimeout(5_000) { stale.await() }.exceptionOrNull()
+            assertTrue(error is java.io.IOException)
+            assertEquals(0, received.get())
+            assertEquals("fresh", socket.rpc("test.Service", "NewAccount", Auth_GetJWTToken_Request.getDefaultInstance()).toString(Charsets.UTF_8))
+            assertEquals(1, received.get())
+        } finally {
+            socket.stop(); scope.cancel(); client.dispatcher.executorService.shutdown(); client.connectionPool.evictAll(); server.shutdown()
+        }
+    }
     @Test fun `empty terminate envelope still has presence`() {
         val bytes = byteArrayOf(26, 0)
         assertTrue(SocketResponse.parseFrom(bytes).hasTerminateSession())

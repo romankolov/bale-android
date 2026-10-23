@@ -23,12 +23,13 @@ import kotlin.random.Random
 class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineScope, private val url: String = BaleEndpoint.SOCKET) : BaleRpc {
     private val mutableState = MutableStateFlow(Connection.Disconnected)
     override val state: StateFlow<Connection> = mutableState.asStateFlow()
-    private val mutableUpdates = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
-    override val updates: SharedFlow<ByteArray> = mutableUpdates.asSharedFlow()
+    private val mutableUpdates = MutableSharedFlow<SessionUpdate>(extraBufferCapacity = 64)
+    override val updates: SharedFlow<SessionUpdate> = mutableUpdates.asSharedFlow()
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<ByteArray>>()
     private val counter = AtomicLong(0)
     private val lifecycle = Mutex()
     private val sessionEpoch = AtomicLong(0)
+    override val sessionId: Long get() = sessionEpoch.get()
     private var job: Job? = null
     @Volatile private var socket: WebSocket? = null
     private val metadata = Metadata.newBuilder().apply {
@@ -38,11 +39,11 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
     }.build()
 
     suspend fun start(token: String) = lifecycle.withLock {
-        sessionEpoch.incrementAndGet()
+        val epoch = sessionEpoch.incrementAndGet()
         job?.cancelAndJoin()
         socket?.cancel()
         mutableState.value = Connection.Connecting
-        job = scope.launch { reconnect(token) }
+        job = scope.launch { reconnect(token, epoch) }
     }
     suspend fun stop() = lifecycle.withLock {
         sessionEpoch.incrementAndGet()
@@ -53,8 +54,8 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
         failPending(IOException("Session closed"))
         mutableState.value = Connection.Disconnected
     }
-    override suspend fun rpc(service: String, method: String, request: MessageLite): ByteArray {
-        val epoch = sessionEpoch.get()
+    override suspend fun rpc(service: String, method: String, request: MessageLite, expectedSession: Long): ByteArray {
+        val epoch = expectedSession
         withTimeout(15_000) {
             state.first { it == Connection.Connected || it == Connection.Unauthorized }
         }
@@ -74,11 +75,11 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
             return withTimeout(20_000) { result.await() }
         } finally { pending.remove(id); result.cancel() }
     }
-    private suspend fun reconnect(token: String) {
+    private suspend fun reconnect(token: String, epoch: Long) {
         var attempts = 0
         while (currentCoroutineContext().isActive) {
             try {
-                runConnection(token) { attempts = 0 }
+                runConnection(token, epoch) { attempts = 0 }
             } catch (_: TimeoutCancellationException) {
                 // A connection/handshake deadline is recoverable, unlike owner cancellation.
                 mutableState.value = Connection.Reconnecting
@@ -99,7 +100,7 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
             delay(backoff + Random.nextLong(0, 100))
         }
     }
-    private suspend fun runConnection(token: String, onReady: () -> Unit): Unit = coroutineScope {
+    private suspend fun runConnection(token: String, epoch: Long, onReady: () -> Unit): Unit = coroutineScope {
         val frames = Channel<ByteArray>(64)
         val opened = CompletableDeferred<Unit>()
         val request = Request.Builder().url(url)
@@ -167,7 +168,7 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
                             }
                         }
                         frame.hasPong() -> pong?.complete(frame.pong.id)
-                        frame.hasUpdate() -> mutableUpdates.emit(frame.update.update.toByteArray())
+                        frame.hasUpdate() -> mutableUpdates.emit(SessionUpdate(epoch, frame.update.update.toByteArray()))
                     }
                 }
                 throw IOException("WebSocket ended")

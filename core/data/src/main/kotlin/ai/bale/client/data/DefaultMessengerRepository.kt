@@ -1,5 +1,6 @@
 package ai.bale.client.data
 
+import ai.bale.client.domain.Account
 import ai.bale.client.domain.AuthRepository
 import ai.bale.client.domain.ChatMessage
 import ai.bale.client.domain.Connection
@@ -26,7 +27,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.security.SecureRandom
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 internal class DefaultMessengerRepository(
     private val auth: AuthRepository,
     private val socket: BaleRpc,
@@ -35,7 +36,9 @@ internal class DefaultMessengerRepository(
     private val gate: AccountGate,
 ) : MessengerRepository {
     private val dao = database.messenger()
-    private val api = MessagingApi(socket)
+    private suspend fun activeSession(): Pair<Account, MessagingApi>? = gate.mutex.withLock {
+        auth.account.value?.let { it to MessagingApi(socket, socket.sessionId) }
+    }
     private val refreshLock = Mutex()
     private val sendLock = Mutex()
     private val random = SecureRandom()
@@ -51,7 +54,7 @@ internal class DefaultMessengerRepository(
             // Do not block the socket-update reducer on one network refresh per event.
             dirtyDialogs.debounce(400).collect { safely { refreshConversations() } }
         }
-        scope.launch { socket.updates.collect { bytes -> safely { applyUpdate(Update.parseFrom(bytes)) } } }
+        scope.launch { socket.updates.collect { event -> safely { applyUpdate(Update.parseFrom(event.payload), event.sessionId) } } }
         scope.launch {
             while (isActive) {
                 delay(1_000)
@@ -73,7 +76,9 @@ internal class DefaultMessengerRepository(
             dao.pagedMessages(account.id, peer.key)
         }.flow.map { page -> page.map { it.domain() } }
     }
-    override fun typingUsers(peer: Peer): Flow<Set<Int>> = typing.map { it[peer.key].orEmpty().keys }.distinctUntilChanged()
+    override fun typingUsers(peer: Peer): Flow<Set<Int>> = combine(auth.account, typing) { account, values ->
+        values["${account?.id}:${peer.key}"].orEmpty().keys
+    }.distinctUntilChanged()
 
     override suspend fun refreshConversations() { loadDialogs(-1) }
     override suspend fun loadMoreConversations(): Int {
@@ -81,7 +86,7 @@ internal class DefaultMessengerRepository(
         return loadDialogs(dao.oldestConversation(account.id) ?: -1)
     }
     private suspend fun loadDialogs(before: Long): Int = refreshLock.withLock {
-        val account = auth.account.value ?: return@withLock 0
+        val (account, api) = activeSession() ?: return@withLock 0
         val response = api.dialogs(before)
         val users = response.usersList.associateBy { it.id }.toMutableMap()
         val groups = response.groupsList.associateBy { it.id }.toMutableMap()
@@ -110,7 +115,7 @@ internal class DefaultMessengerRepository(
     }
     override suspend fun loadOlderHistory(peer: Peer): Int = loadHistory(peer, OLDER)
     override suspend fun loadHistory(peer: Peer, before: Long): Int {
-        val account = auth.account.value ?: return 0
+        val (account, api) = activeSession() ?: return 0
         // -2 is the explicit "continue older" sentinel; -1 remains the documented first page.
         val cursor = if (before == OLDER) dao.oldestMessage(account.id, peer.key) ?: -1 else before
         val response = api.history(peer, cursor)
@@ -140,6 +145,8 @@ internal class DefaultMessengerRepository(
         deliver(peer, message)
     }
     private suspend fun deliver(peer: Peer, message: MessageEntity) = sendLock.withLock {
+        val (account, api) = activeSession() ?: return@withLock
+        if (account.id != message.accountId) return@withLock
         val latest = dao.message(message.accountId, peer.key, message.rid) ?: return@withLock
         if (latest.delivery == Delivery.Sent.name || latest.deleted || auth.account.value?.id != message.accountId) return@withLock
         gate.mutex.withLock { dao.delivery(message.accountId, peer.key, message.rid, Delivery.Pending.name, message.date) }
@@ -163,51 +170,56 @@ internal class DefaultMessengerRepository(
         }
     }
     override suspend fun markRead(peer: Peer, date: Long) {
-        val account = auth.account.value ?: return
+        val (account, api) = activeSession() ?: return
         if (date <= 0) return
         api.read(peer, date)
-        gate.mutex.withLock { if (auth.account.value == account) dao.read(account.id, peer.key) }
+        if (auth.account.value == account) dirtyDialogs.tryEmit(Unit)
     }
     override suspend fun edit(peer: Peer, message: ChatMessage, text: String) {
-        val account = auth.account.value ?: error("No account")
-        require(message.senderId == account.id && message.supported && !message.deleted && message.delivery == Delivery.Sent)
+        val (account, api) = activeSession() ?: error("No account")
+        require(message.peerKey == peer.key && message.senderId == account.id && message.supported && !message.deleted && message.delivery == Delivery.Sent)
         require(text.isNotBlank() && text.length <= 4096)
         api.edit(peer, message.rid, text.trim())
         gate.mutex.withLock {
             if (auth.account.value == account) dao.message(account.id, peer.key, message.rid)?.let { row ->
-                val history = row.history().toBuilder().setMessage(MessagingApi.text(text.trim())).setEditedAt(Int64Value.of(System.currentTimeMillis())).build()
-                dao.messages(listOf(row.copy(text = text.trim(), metadata = history.toByteArray())))
+                if (!row.deleted) {
+                    val history = row.history().toBuilder().setMessage(MessagingApi.text(text.trim())).setEditedAt(Int64Value.of(System.currentTimeMillis())).build()
+                    dao.messages(listOf(row.copy(text = text.trim(), metadata = history.toByteArray())))
+                }
             }
         }
         dirtyDialogs.tryEmit(Unit)
     }
     override suspend fun delete(peer: Peer, message: ChatMessage, forEveryone: Boolean) {
-        val account = auth.account.value ?: error("No account")
+        val (account, api) = activeSession() ?: error("No account")
         require(message.peerKey == peer.key)
         if (message.delivery != Delivery.Sent) {
             require(message.delivery == Delivery.Failed) { "Cannot discard an in-flight message" }
-            gate.mutex.withLock { if (auth.account.value == account) dao.discardPending(account.id, peer.key, message.rid) }
+            gate.mutex.withLock { if (auth.account.value == account) check(dao.discardPending(account.id, peer.key, message.rid) == 1) }
             return
         }
         require(!message.deleted && (!forEveryone || message.senderId == account.id))
         api.delete(peer, message.date, forEveryone)
-        gate.mutex.withLock { if (auth.account.value == account) dao.deleteRid(account.id, peer.key, message.rid) }
+        gate.mutex.withLock { if (auth.account.value == account) database.withTransaction {
+            dao.tombstones(listOf(MessageTombstone(account.id, peer.key, message.date, message.rid)))
+            dao.deleteRid(account.id, peer.key, message.rid)
+        } }
         dirtyDialogs.tryEmit(Unit)
     }
     override suspend fun forward(from: Peer, to: Peer, message: ChatMessage) {
+        val (_, api) = activeSession() ?: error("No account")
         require(message.peerKey == from.key && !message.deleted && message.delivery == Delivery.Sent)
-        api.forward(from, to, message.reference)
-        loadHistory(to)
+        api.forward(from, to, message.reference, random.nextLong().ushr(2).coerceAtLeast(1))
         dirtyDialogs.tryEmit(Unit)
     }
     override suspend fun react(peer: Peer, message: ChatMessage, code: String, remove: Boolean) {
-        val account = auth.account.value ?: error("No account")
+        val (account, api) = activeSession() ?: error("No account")
         require(message.peerKey == peer.key && message.delivery == Delivery.Sent && !message.deleted && code.isNotBlank() && code.length <= 32)
         val reaction = api.react(peer, message.reference, code, remove)
         gate.mutex.withLock { if (auth.account.value == account && reaction != null) updateReaction(account.id, peer.key, message.rid, reaction) }
     }
     override suspend fun searchMessages(query: String, peer: Peer?): SearchPage {
-        val account = auth.account.value ?: error("No account")
+        val (account, api) = activeSession() ?: error("No account")
         require(query.isNotBlank() && query.length <= 256)
         val response = api.search(query.trim(), peer)
         if (auth.account.value != account) return SearchPage(emptyList(), 0)
@@ -227,13 +239,14 @@ internal class DefaultMessengerRepository(
         return SearchPage(hits, response.resultCount)
     }
     override suspend fun setTyping(peer: Peer, active: Boolean) {
-        if (connection.value == Connection.Connected && auth.account.value != null) api.typing(peer, active)
+        val (_, api) = activeSession() ?: return
+        if (connection.value == Connection.Connected) api.typing(peer, active)
     }
 
-    private suspend fun applyUpdate(update: Update) {
+    private suspend fun applyUpdate(update: Update, session: Long) {
         val account = auth.account.value ?: return
         gate.mutex.withLock {
-            if (auth.account.value != account) return@withLock
+            if (auth.account.value != account || session != socket.sessionId) return@withLock
             database.withTransaction {
                 if (update.hasMessage()) {
                     val m = update.message
@@ -263,8 +276,17 @@ internal class DefaultMessengerRepository(
                 if (update.hasMessageDelete()) {
                     val m = update.messageDelete
                     val key = "${m.peer.type}:${m.peer.id}"
-                    if (m.hasDates()) dao.deleteDates(account.id, key, m.dates.datesList)
-                    if (m.hasField34()) dao.deleteRid(account.id, key, m.field34.rid)
+                    if (m.hasDates()) {
+                        val dates = m.dates.datesList.filter { it > 0 }
+                        dao.tombstones(dates.map { MessageTombstone(account.id, key, it, 0) })
+                        dao.deleteDates(account.id, key, dates)
+                    }
+                    if (m.hasField34()) {
+                        val id = m.field34
+                        if (id.date > 0 || id.rid != 0L) dao.tombstones(listOf(MessageTombstone(account.id, key, id.date, id.rid)))
+                        if (id.rid != 0L) dao.deleteRid(account.id, key, id.rid)
+                        else if (id.date > 0) dao.deleteDates(account.id, key, listOf(id.date))
+                    }
                 }
                 if (update.hasMessageRead()) {
                     val m = update.messageRead
@@ -276,7 +298,7 @@ internal class DefaultMessengerRepository(
                 }
                 if (update.hasMessageReadByMe()) {
                     val m = update.messageReadByMe
-                    dao.read(account.id, "${m.peer.type}:${m.peer.id}")
+                    if (m.hasUnreadCounter()) dao.unread(account.id, "${m.peer.type}:${m.peer.id}", m.unreadCounter.value.coerceAtLeast(0))
                 }
                 if (update.hasReactionsUpdate()) {
                     val m = update.reactionsUpdate
@@ -284,13 +306,14 @@ internal class DefaultMessengerRepository(
                 }
             }
         }
+        if (session != socket.sessionId || auth.account.value != account) return
         if (update.hasTyping()) {
             val m = update.typing
-            if (m.uid != account.id) typing.update { it + ("${m.peer.type}:${m.peer.id}" to (it["${m.peer.type}:${m.peer.id}"].orEmpty() + (m.uid to System.currentTimeMillis() + 6_000))) }
+            if (m.uid != account.id) typing.update { it + ("${account.id}:${m.peer.type}:${m.peer.id}" to (it["${account.id}:${m.peer.type}:${m.peer.id}"].orEmpty() + (m.uid to System.currentTimeMillis() + 6_000))) }
         }
         if (update.hasTypingStop()) {
             val m = update.typingStop
-            typing.update { it + ("${m.peer.type}:${m.peer.id}" to (it["${m.peer.type}:${m.peer.id}"].orEmpty() - m.uid)) }
+            typing.update { it + ("${account.id}:${m.peer.type}:${m.peer.id}" to (it["${account.id}:${m.peer.type}:${m.peer.id}"].orEmpty() - m.uid)) }
         }
         if (update.hasMessage() || update.hasMessages() || update.hasMessageSent() || update.hasMessageContentChanged() ||
             update.hasMessageDelete() || update.hasMessageReadByMe()) dirtyDialogs.tryEmit(Unit)
@@ -307,7 +330,7 @@ internal class DefaultMessengerRepository(
     }
     private suspend fun merge(incoming: MessageEntity) {
         val old = dao.message(incoming.accountId, incoming.peerKey, incoming.rid)
-        if (old?.deleted == true) return
+        if (old?.deleted == true || dao.isDeleted(incoming.accountId, incoming.peerKey, incoming.date, incoming.rid)) return
         val metadata = incoming.history().toBuilder()
         if (old != null && !metadata.hasQuotedMessage() && old.history().hasQuotedMessage()) metadata.setQuotedMessage(old.history().quotedMessage)
         dao.messages(listOf(incoming.copy(metadata = metadata.build().toByteArray(), received = old?.received ?: false,

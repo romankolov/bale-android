@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -141,7 +142,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                         modifier = if (expanded) Modifier.width(360.dp) else Modifier.weight(1f))
                     if (expanded) VerticalDivider()
                     val peer = selected
-                    if (peer != null) key(peer.key) {
+                    if (peer != null) key(account?.id, peer.key) {
                         ChatPane(
                             title = allChats.firstOrNull { it.peer.key == peer.key }?.title ?: peer.id.toString(),
                             peer = peer, queuing = queuing, messages = messages, me = account?.id,
@@ -220,10 +221,10 @@ private fun ChatPane(
     var draft by rememberSaveable(peer.key) { mutableStateOf("") }
     var editingDraft by remember(composer.edit?.rid) { mutableStateOf(composer.edit?.text.orEmpty()) }
     val listState = rememberLazyListState()
-    val visibleIncoming by remember(messages, listState, me) { derivedStateOf {
+    val visibleIncoming by remember(messages, listState, me, peer.key) { derivedStateOf {
         listState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
             if (item.index < messages.itemCount) messages.peek(item.index) else null
-        }.filter { it.senderId != me && it.delivery == Delivery.Sent }.maxOfOrNull { it.date }
+        }.filter { it.peerKey == peer.key && it.senderId != me && it.delivery == Delivery.Sent }.maxOfOrNull { it.date }
     } }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(peer.key, visibleIncoming, lifecycle) {
@@ -273,7 +274,7 @@ private fun ChatPane(
                     if (composer.edit != null) editingDraft = it else draft = it
                     onDraftChanged(it)
                 }
-            }, modifier = Modifier.weight(1f), maxLines = 5, enabled = !queuing,
+            }, modifier = Modifier.weight(1f).testTag("message-composer"), maxLines = 5, enabled = !queuing,
                 shape = RoundedCornerShape(28.dp), placeholder = { Text(stringResource(R.string.message_hint)) })
             Button(onClick = {
                 val submitted = input
@@ -332,11 +333,11 @@ private fun SearchDialog(state: SearchState, hasChat: Boolean, onSearch: (String
     var currentOnly by rememberSaveable { mutableStateOf(hasChat) }
     AlertDialog(onDismissRequest = onClose, title = { Text(stringResource(R.string.search_messages)) }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(query, { if (it.length <= 256) query = it }, label = { Text(stringResource(R.string.search_messages)) }, singleLine = true)
+            OutlinedTextField(query, { if (it.length <= 256) query = it }, label = { Text(stringResource(R.string.search_messages)) }, singleLine = true, modifier = Modifier.testTag("server-search-query"))
             if (hasChat) Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(currentOnly, { currentOnly = it }); Text(stringResource(R.string.search_this_chat))
             }
-            Button(onClick = { onSearch(query, currentOnly && hasChat) }, enabled = query.isNotBlank() && !state.busy) { Text(stringResource(R.string.search_messages)) }
+            Button(onClick = { onSearch(query, currentOnly && hasChat) }, enabled = query.isNotBlank() && !state.busy, modifier = Modifier.testTag("server-search-submit")) { Text(stringResource(R.string.search_messages)) }
             if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (state.failed) Text(stringResource(R.string.action_failed), color = MaterialTheme.colorScheme.error)
             state.page?.let { page ->

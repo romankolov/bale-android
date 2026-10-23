@@ -46,6 +46,7 @@ dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":feature:auth"))
     androidTestImplementation(libs.coroutines.android)
+    androidTestImplementation(libs.paging.common)
     implementation(project(":feature:messaging"))
     implementation(platform(libs.compose.bom))
     implementation(libs.activity.compose)

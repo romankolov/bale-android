@@ -14,12 +14,13 @@ import org.junit.Test
 class MessagingApiTest {
     private class RecordingRpc : BaleRpc {
         override val state = MutableStateFlow(Connection.Connected)
-        override val updates = MutableSharedFlow<ByteArray>()
+        override var sessionId = 0L
+        override val updates = MutableSharedFlow<ai.bale.client.network.SessionUpdate>()
         var service = ""
         var method = ""
         lateinit var request: MessageLite
         var response = byteArrayOf()
-        override suspend fun rpc(service: String, method: String, request: MessageLite): ByteArray {
+        override suspend fun rpc(service: String, method: String, request: MessageLite, expectedSession: Long): ByteArray {
             this.service = service; this.method = method; this.request = request
             return response
         }
@@ -64,9 +65,10 @@ class MessagingApiTest {
     }
     @Test fun `forward uses Peer3 destination and original peer reference`() = runTest {
         val rpc = RecordingRpc()
-        MessagingApi(rpc).forward(peer, Peer(99, 2, 456), message)
+        MessagingApi(rpc).forward(peer, Peer(99, 2, 456), message, 9876543210123)
         val request = rpc.request as Messaging_ForwardMessages_Request
         assertEquals("ForwardMessages", rpc.method)
+        assertEquals(listOf(9876543210123L), request.messageIdsList)
         assertEquals(2, request.peer.type)
         assertEquals(99, request.peer.id)
         assertEquals(456L, request.peer.accessHash)
