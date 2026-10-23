@@ -125,8 +125,8 @@ data class BotButton(
 
 data class LinkPreviewInfo(
     val url: String,
-    val title: String,
-    val description: String,
+    val title: String = "",
+    val description: String = "",
     val imageUrl: String = "",
     val summary: String = "",
 )

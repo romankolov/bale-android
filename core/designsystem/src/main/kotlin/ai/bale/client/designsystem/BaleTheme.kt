@@ -35,12 +35,8 @@ object AppLocaleStore {
         val locale = java.util.Locale.forLanguageTag(tag)
         java.util.Locale.setDefault(locale)
         val configuration = Configuration(base.resources.configuration)
-        configuration.setLocale(locale)
-        configuration.layoutDirection = if (tag.startsWith("fa")) {
-            Configuration.LAYOUT_DIRECTION_RTL
-        } else {
-            Configuration.LAYOUT_DIRECTION_LTR
-        }
+        // setLayoutDirection derives RTL/LTR from the locale, so Arabic/Persian flip the layout.
+        configuration.setLayoutDirection(locale)
         return base.createConfigurationContext(configuration)
     }
 }

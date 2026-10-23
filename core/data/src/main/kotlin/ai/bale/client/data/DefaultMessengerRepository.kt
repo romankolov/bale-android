@@ -6,6 +6,7 @@ import ai.bale.client.network.BaleRpc
 import ai.bale.client.network.DirectoryApi
 import ai.bale.client.network.FilesApi
 import ai.bale.client.network.MessagingApi
+import ai.bale.client.network.MessagingApi.Companion.exWire
 import ai.bale.client.network.RichFeaturesApi
 import ai.bale.client.protocol.*
 import android.graphics.Bitmap
@@ -930,7 +931,7 @@ internal class DefaultMessengerRepository(
     }
 
     // --- Stickers, GIFs, previews and transcripts ---
-    private fun mapStickerPack(collection: Collections, owned: Boolean): StickerPack {
+    private fun mapStickerPack(collection: ai.bale.client.protocol.Collections, owned: Boolean): StickerPack {
         val items = collection.stickersList.map { entry ->
             val location = when {
                 entry.hasImage256() && entry.image256.hasFileLocation() -> entry.image256
@@ -1224,7 +1225,7 @@ internal class DefaultMessengerRepository(
         val pins = runCatching {
             session.messaging.pinnedMessages(peer).map { enrichMessage(account, it.entity(account.id, peer.key).domain()) }
         }.getOrDefault(emptyList())
-        if (peer.kind == 1) {
+        return if (peer.kind == 1) {
             val full = session.directory.fullUser(peer)
             val resolvedHash = full.accessHash.takeIf { it != 0L } ?: peer.accessHash
             val resolvedPeer = Peer(peer.id, 1, resolvedHash)
