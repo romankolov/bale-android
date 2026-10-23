@@ -8,6 +8,7 @@ import ai.bale.client.domain.MessageReference
 import ai.bale.client.domain.Peer
 import ai.bale.client.domain.SavedGif
 import ai.bale.client.domain.StickerItem
+import ai.bale.client.network.MessagingApi.Companion.exWire
 import ai.bale.client.protocol.*
 import com.google.protobuf.BoolValue
 import com.google.protobuf.ByteString

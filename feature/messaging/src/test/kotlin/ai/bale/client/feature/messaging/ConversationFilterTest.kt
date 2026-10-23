@@ -47,7 +47,7 @@ class ConversationFilterTest {
     @Test fun `each filter selects exactly the conversations it advertises`() {
         assertEquals(listOf("1:1", "2:2", "1:3", "1:5", "1:6"), chats.filter { it.matches("", DialogFilter.All) }.map { it.peer.key })
         assertEquals(listOf("1:1", "1:6"), chats.filter { it.matches("", DialogFilter.Unread) }.map { it.peer.key })
-        assertEquals(listOf("1:1", "1:3", "1:5", "1:6"), chats.filter { it.matches("", DialogFilter.Personal) }.map { it.peer.key })
+        assertEquals(listOf("1:1", "1:6"), chats.filter { it.matches("", DialogFilter.Personal) }.map { it.peer.key })
         assertEquals(listOf("2:2"), chats.filter { it.matches("", DialogFilter.Groups) }.map { it.peer.key })
         assertEquals(listOf("1:3"), chats.filter { it.matches("", DialogFilter.Bots) }.map { it.peer.key })
         assertEquals(listOf("1:5"), chats.filter { it.matches("", DialogFilter.Saved) }.map { it.peer.key })

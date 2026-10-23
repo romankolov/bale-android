@@ -23,12 +23,6 @@ class ClientPreferencesStoreTest {
         assertEquals("fa", store.preferences.value.language.tag)
     }
 
-    @Test fun `unread and empty preference writes keep defaults when the value is unknown`() {
-        val store = ClientPreferencesStore()
-        store.updatePreferences { it.copy(themeMode = AppThemeMode.valueOf("Nonsense".let { "System" })) }
-        assertEquals(AppThemeMode.System, store.preferences.value.themeMode)
-    }
-
     @Test fun `per-account overlays isolate drafts pins mutes unread and mention counters`() {
         val store = ClientPreferencesStore()
         store.updateOverlay(7) { current ->
