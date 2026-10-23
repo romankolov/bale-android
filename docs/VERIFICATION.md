@@ -1,4 +1,21 @@
-# Verification record
+# Verification
+
+## Release-candidate gates
+
+Each push runs four gates, and a fifth pair runs on both emulators:
+
+1. `protocol` (≈15 s): 12 wire-encoding tests, `generate_coverage.py --check` (**113** implemented
+   RPCs of 699, per-service scope), `check_kotlin_consistency.py` (static cross-layer verification)
+   and a Java-lite `protoc` generation check.
+2. `android`: 75 JVM unit tests across five modules, `:app:assembleDebug`, strict `:app:lintDebug`
+   (`warningsAsErrors = true`), `:app:assembleRelease` (R8 + resource shrinking + debug signing) and
+   both androidTest APKs, plus the exported Room schema hash check (must stay
+   `1c603993d1d1994bc9e00c0cae07c49d` for schema v3).
+3. `device-tests (29)` and `device-tests (36)`: 24 instrumentation tests on hardware-accelerated
+   emulators for Android 10 and Android 16.
+4. Artifacts: `development-apk`, `release-candidate-apk`, `verification-reports` and per-API
+   `device-test-reports-*`.
+ record
 
 ## Successful GitHub Actions run
 
