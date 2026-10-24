@@ -281,7 +281,7 @@ class MessengerRepositoryTest {
     }
 
     @Test fun channelUploadForwardedSocketUpdatesAndPollVoteSwitchingWorkEndToEnd() = runBlocking<Unit> {
-        // 1. Channel file upload resolves ExPeerKind.CHANNEL (3) and channel owner accessHash
+        // 1. Channel file upload resolves ExPeerKind.CHANNEL (3) and the channel peer as uploader uid
         rpc.uploadUrl = "https://files.bale.ai/upload/707"
         val channelPeer = Peer(777, 2, 999L)
         repository.sendMedia(
@@ -295,7 +295,9 @@ class MessengerRepositoryTest {
         val sentDocReq = rpc.requests.last { it.first == "SendMessage" }.second as Messaging_SendMessage_Request
         assertEquals(2, sentDocReq.peer.type)
         assertEquals(3, sentDocReq.exPeer.type)
-        assertEquals(777L, sentDocReq.message.documentMessage.accessHash)
+        // Fresh uploads carry no access hash at all (the web client never invents one; a
+        // fabricated hash is what made documents reject server-side).
+        assertEquals(0L, sentDocReq.message.documentMessage.accessHash)
 
         // 2. Live socket forwarded message unwraps emptyMessage into real supported ChatMessage
         val p = ai.bale.client.protocol.Peer.newBuilder().setType(1).setId(42).build()
