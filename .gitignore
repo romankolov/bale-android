@@ -1,0 +1,15 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+*.jks
+*.keystore
+.env
+.venv/
+__pycache__/
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+ci-logs/

@@ -1,0 +1,251 @@
+{
+  "Dates": {
+    "1": {
+      "original": [
+        "dates",
+        "bytes",
+        true
+      ],
+      "replacement": [
+        "dates",
+        "int64",
+        true
+      ],
+      "evidence": "bale-start.zip: chal/pretty/index.fe3fa18088.js lines 9885-9917; Q.encode writes uint32(10).fork(), int64 for each date, join."
+    }
+  },
+  "Dates2": {
+    "1": {
+      "original": [
+        "dates",
+        "bytes",
+        true
+      ],
+      "replacement": [
+        "dates",
+        "int64",
+        true
+      ],
+      "evidence": "bale-start.zip: chal/pretty/index.fe3fa18088.js lines 14329-14361; ig.encode/ig.decode use the same packed int64 layout."
+    }
+  },
+  "Messaging_ForwardMessages_Request": {
+    "2": {
+      "original": [
+        "field_16",
+        "bytes",
+        false
+      ],
+      "replacement": [
+        "messageIds",
+        "int64",
+        true
+      ],
+      "evidence": "bale-start.zip: research/aiobale/aiobale/methods/messaging/forward_message.py message_ids: List[int], alias 2."
+    }
+  },
+  "Messaging_UnPinMessages_Request": {
+    "2": {
+      "original": [
+        "field_18",
+        "MessageId",
+        false
+      ],
+      "replacement": [
+        "messages",
+        "MessageId",
+        true
+      ],
+      "evidence": "bale-start.zip: research/aiobale/aiobale/methods/messaging/unpin_messages.py messages: List[OtherMessage], alias 2."
+    }
+  },
+  "Groups_CreateGroup_Request": {
+    "3": {
+      "original": [
+        "field_26",
+        "UserPeers",
+        false
+      ],
+      "replacement": [
+        "users",
+        "UserPeers",
+        true
+      ],
+      "evidence": "bale-start.zip: research/aiobale/aiobale/methods/groups/create_group.py users: Optional[List[ShortPeer]], alias 3."
+    }
+  },
+  "Groups_InviteUsers_Request": {
+    "3": {
+      "original": [
+        "field_26",
+        "UserPeers",
+        false
+      ],
+      "replacement": [
+        "users",
+        "UserPeers",
+        true
+      ],
+      "evidence": "bale-start.zip: research/aiobale/aiobale/methods/groups/invite_users.py users: List[ShortPeer], alias 3."
+    }
+  },
+  "Poll_Vote_Request": {
+    "4": {
+      "original": [
+        "optionIds",
+        "bytes",
+        true
+      ],
+      "replacement": [
+        "optionIds",
+        "int32",
+        true
+      ],
+      "evidence": "bale-start.zip: MainRoutes.497778fd43.js mi.encode/mi.decode writes uint32(34).fork(), int32 for each optionId, join."
+    }
+  },
+  "Field264": {
+    "1": {
+      "original": [
+        "users",
+        "bytes",
+        true
+      ],
+      "replacement": [
+        "users",
+        "int32",
+        true
+      ],
+      "evidence": "bale-start.zip: research/aiobale/aiobale/types/reaction.py users: List[int] varint-encoded at alias 1."
+    }
+  },
+  "Msg_4825_fafe26abbf__79002_p": {
+    "2": {
+      "original": [
+        "field_18",
+        "Field264",
+        false
+      ],
+      "replacement": [
+        "reactions",
+        "Field264",
+        true
+      ],
+      "evidence": "bale-start.zip: research/aiobale/aiobale/types/responses/reaction_sent.py reactions: List[Reaction] at alias 2."
+    }
+  },
+  "ReactionsUpdate": {
+    "3": {
+      "original": [
+        "field_26",
+        "Field264",
+        false
+      ],
+      "replacement": [
+        "reactions",
+        "Field264",
+        true
+      ],
+      "evidence": "bale-start.zip: repeated Field264 list of all current reactions on the message."
+    }
+  },
+  "MessageReactions": {
+    "3": {
+      "original": [
+        "field_26",
+        "Field264",
+        false
+      ],
+      "replacement": [
+        "reactions",
+        "Field264",
+        true
+      ],
+      "evidence": "bale-start.zip: research/aiobale/aiobale/types/message_reaction.py reactions: List[Reaction] at alias 3."
+    }
+  },
+  "DocumentMessage": {
+    "6": {
+      "original": [
+        "thumb",
+        "bytes",
+        false
+      ],
+      "replacement": [
+        "thumb",
+        "Thumb",
+        false
+      ],
+      "evidence": "bale-start.zip: research/aiobale/aiobale/types/message_content.py DocumentMessage.thumb is Thumbnail {1: w, 2: h, 3: image bytes}."
+    }
+  },
+  "Collections": {
+    "3": {
+      "original": [
+        "field_26",
+        "Field265",
+        false
+      ],
+      "replacement": [
+        "stickers",
+        "Field265",
+        true
+      ],
+      "evidence": "bale-start.zip: sticker collection items are repeated Field265 entries at wire tag 26 (field 3)."
+    },
+    "5": {
+      "original": [
+        "field_42",
+        "Field422",
+        false
+      ],
+      "replacement": [
+        "stickersV2",
+        "Field422",
+        true
+      ],
+      "evidence": "bale-start.zip: sticker collection v2 entries are repeated Field422 messages at wire tag 42 (field 5)."
+    }
+  },
+  "StickerMessage": {
+    "3": {
+      "original": [
+        "image512",
+        "bytes",
+        false
+      ],
+      "replacement": [
+        "image512",
+        "ImageLocation",
+        false
+      ],
+      "evidence": "bale-start.zip: index.fe3fa18088.js:12450 encodes image512 with the $.rF ImageLocation codec (module exports rF: T, {fileLocation,width,height,fileSize}); the stub proto's bytes type is a simplification."
+    },
+    "4": {
+      "original": [
+        "image256",
+        "bytes",
+        false
+      ],
+      "replacement": [
+        "image256",
+        "ImageLocation",
+        false
+      ],
+      "evidence": "bale-start.zip: index.fe3fa18088.js:12450 encodes image256 with the same $.rF ImageLocation codec; matches Collections.Field265.image256: ImageLocation."
+    },
+    "8": {
+      "original": [
+        "animation",
+        "bytes",
+        false
+      ],
+      "replacement": [
+        "animation",
+        "ImageLocation",
+        false
+      ],
+      "evidence": "bale-start.zip: index.fe3fa18088.js:12450 encodes animation with the $.rF ImageLocation codec (animated stickers reference a stored file, never raw bytes)."
+    }
+  }
+}
