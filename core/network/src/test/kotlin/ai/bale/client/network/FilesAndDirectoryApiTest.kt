@@ -124,7 +124,7 @@ class FilesAndDirectoryApiTest {
         }
     }
 
-    @Test fun `chunkSize answers are ignored; the whole file still travels as one PUT`() = runTest {
+    @Test fun `chunkSize answers are ignored and the whole file still travels as one PUT`() = runTest {
         val server = MockWebServer()
         server.enqueue(MockResponse().setResponseCode(200))
         server.start()
