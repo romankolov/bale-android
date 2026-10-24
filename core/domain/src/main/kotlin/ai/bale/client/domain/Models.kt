@@ -260,6 +260,9 @@ data class StickerItem(
     val animated: Boolean = false,
     /** Wire format stored by the server (`Collections.Field265.format`); 0 lets the server default apply. */
     val format: Int = 0,
+    /** File reference metadata of the collection entry, echoed back verbatim when sending. */
+    val storageVersion: Int = 0,
+    val sizeBytes: Int = 0,
     val previewBytes: ByteArray = byteArrayOf(),
 ) {
     override fun equals(other: Any?): Boolean = other is StickerItem &&

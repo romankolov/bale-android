@@ -287,6 +287,21 @@ class RichFeaturesApi(private val rpc: BaleRpc, private val session: Long = rpc.
                 .setStickerCollectionId(Int32Value.of(sticker.collectionId))
                 .setStickerCollectionAccessHash(Int64Value.of(sticker.collectionAccessHash))
             if (sticker.format != 0) builder.setFormat(sticker.format)
+            // The server resolves a send through the sticker's stored file reference: echo the
+            // exact ImageLocation (animated packs use `animation`, static ones `image256`).
+            if (sticker.fileId != 0L) {
+                val location = ImageLocation.newBuilder()
+                    .setFileLocation(
+                        FileLocation.newBuilder()
+                            .setFileId(sticker.fileId)
+                            .setAccessHash(sticker.accessHash)
+                            .apply { if (sticker.storageVersion != 0) setFileStorageVersion(Int32Value.of(sticker.storageVersion)) },
+                    )
+                    .setWidth(sticker.width)
+                    .setHeight(sticker.height)
+                    .setFileSize(sticker.sizeBytes)
+                if (sticker.animated) builder.setAnimation(location) else builder.setImage256(location)
+            }
             return Message2.newBuilder().setStickerMessage(builder).build()
         }
 

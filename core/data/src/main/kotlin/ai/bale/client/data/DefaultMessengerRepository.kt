@@ -320,7 +320,7 @@ internal class DefaultMessengerRepository(
             // quiet while still reporting Connected, re-poll the dialogs and the open chat once per
             // window so the list never depends on a manual pull-to-refresh.
             while (isActive) {
-                delay(10_000)
+                delay(2_000)
                 if (socket.state.value != Connection.Connected) continue
                 if (System.currentTimeMillis() - mutableLastPushAt.value <= PUSH_STALE_MS) continue
                 mutableLastPushAt.value = System.currentTimeMillis()
@@ -1139,6 +1139,8 @@ internal class DefaultMessengerRepository(
                 height = location?.height ?: 0,
                 animated = collection.animated.value || entry.format == 2,
                 format = entry.format,
+                storageVersion = location?.fileLocation?.let { if (it.hasFileStorageVersion()) it.fileStorageVersion.value else 0 } ?: 0,
+                sizeBytes = location?.fileSize ?: 0,
             )
         } + collection.stickersV2List.map { entry ->
             StickerItem(
@@ -1151,6 +1153,8 @@ internal class DefaultMessengerRepository(
                 width = if (entry.hasFileLocation()) entry.fileLocation.width else 0,
                 height = if (entry.hasFileLocation()) entry.fileLocation.height else 0,
                 animated = collection.animated.value,
+                storageVersion = if (entry.hasFileLocation() && entry.fileLocation.fileLocation.hasFileStorageVersion()) entry.fileLocation.fileLocation.fileStorageVersion.value else 0,
+                sizeBytes = if (entry.hasFileLocation()) entry.fileLocation.fileSize else 0,
             )
         }
         return StickerPack(
@@ -2060,5 +2064,5 @@ internal class DefaultMessengerRepository(
         try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { /* user retry/reconnect remains available; no private payload logging */ }
     }
 
-    companion object { const val OLDER = -2L; const val METADATA_PAGE_SIZE = 100; const val PUSH_STALE_MS = 45_000L }
+    companion object { const val OLDER = -2L; const val METADATA_PAGE_SIZE = 100; const val PUSH_STALE_MS = 8_000L }
 }

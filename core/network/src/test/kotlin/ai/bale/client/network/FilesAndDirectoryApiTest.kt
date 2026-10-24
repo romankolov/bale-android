@@ -124,9 +124,9 @@ class FilesAndDirectoryApiTest {
         }
     }
 
-    @Test fun `chunkSize answers switch uploads to indexed chunk PUTs with an empty confirming PUT`() = runTest {
+    @Test fun `chunkSize answers are ignored; the whole file still travels as one PUT`() = runTest {
         val server = MockWebServer()
-        repeat(4) { server.enqueue(MockResponse().setResponseCode(200)) }
+        server.enqueue(MockResponse().setResponseCode(200))
         server.start()
         val http = OkHttpClient()
         try {
@@ -151,23 +151,14 @@ class FilesAndDirectoryApiTest {
             assertEquals(4242L, uploaded.fileId)
             assertEquals(1f, progress.last())
 
-            // 10 bytes at 4/chunk => chunks 0,1,2 then the empty confirmation PUT (4th request).
-            assertEquals(3L, server.requestCount.toLong() - 1L)
-            val first = server.takeRequest()
-            assertEquals("PUT", first.method)
-            assertEquals("0", first.getHeader("chunk"))
-            assertEquals("3", first.getHeader("no"))
-            assertArrayEquals(rawBytes.copyOfRange(0, 4), first.body.readByteArray())
-            val second = server.takeRequest()
-            assertEquals("1", second.getHeader("chunk"))
-            assertArrayEquals(rawBytes.copyOfRange(4, 8), second.body.readByteArray())
-            val third = server.takeRequest()
-            assertEquals("2", third.getHeader("chunk"))
-            assertArrayEquals(rawBytes.copyOfRange(8, 10), third.body.readByteArray())
-            val confirm = server.takeRequest()
-            assertEquals("3", confirm.getHeader("chunk"))
-            assertEquals("3", confirm.getHeader("no"))
-            assertEquals(0L, confirm.bodySize)
+            // The server never assembles partial uploads; splitting on chunkSize lost every file
+            // larger than one chunk. Exactly one PUT, full bytes, no chunk bookkeeping headers.
+            assertEquals(1L, server.requestCount.toLong())
+            val put = server.takeRequest()
+            assertEquals("PUT", put.method)
+            assertNull(put.getHeader("chunk"))
+            assertNull(put.getHeader("no"))
+            assertArrayEquals(rawBytes, put.body.readByteArray())
         } finally {
             server.shutdown()
             http.dispatcher.executorService.shutdown()

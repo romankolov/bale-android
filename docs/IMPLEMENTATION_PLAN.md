@@ -13,7 +13,7 @@ Following user confirmation that the initial login/messaging build worked agains
 5. **Batch 5 — Schema baseline, lint & cross-version emulator regression**
    - Committed KSP Room schema (`core/data/schemas/ai.bale.client.data.BaleDatabase/3.json`), `CommandLineArgumentProvider` Gradle cache wiring, strict `warningsAsErrors = true` lint compliance, 262 verified EN/FA string resources, 12 protocol tests, 75 JVM tests, and 24 instrumentation tests across Android 10 (API 29) and Android 16 (API 36).
 
-6. **Release candidate `1.0.0-rc1` — feature breadth** (followed by `1.0.0-rc2` live-device hardening)
+6. **Release candidate `1.0.0-rc1` — feature breadth** (followed by `1.0.0-rc2`/`1.0.0-rc3` live-device hardening)
    - Chat folders and filter tabs, per-account dialog state (draft, pin, mute, unread, mention counters) stored outside Room so schema v3 stays untouched.
    - Full-screen media viewer with photo/video/document rendering, voice transcription and GIF saving; sticker pack and saved-GIF pickers wired to `bale.v1.Images`.
    - Scheduled sending through `bale.schedule.v1.Scheduler`, threads/channel comments through `LoadReplies` + `threadId`, shared media gallery through `SharedMediaService`.

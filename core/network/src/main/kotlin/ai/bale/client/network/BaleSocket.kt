@@ -8,6 +8,7 @@ import ai.bale.client.protocol.transport.Handshake
 import com.google.protobuf.ByteString
 import com.google.protobuf.MessageLite
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -23,7 +24,13 @@ import kotlin.random.Random
 class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineScope, private val url: String = BaleEndpoint.SOCKET) : BaleRpc {
     private val mutableState = MutableStateFlow(Connection.Disconnected)
     override val state: StateFlow<Connection> = mutableState.asStateFlow()
-    private val mutableUpdates = MutableSharedFlow<SessionUpdate>(extraBufferCapacity = 64)
+    // Non-suspending fan-out: a busy update reducer (it serialises behind account-wide work) must
+    // never block the reader or the socket gets torn by frame overflow. Stale frames may drop; the
+    // repository's staleness refresh re-synchronises state, while a torn connection would delay everything.
+    private val mutableUpdates = MutableSharedFlow<SessionUpdate>(
+        extraBufferCapacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
     override val updates: SharedFlow<SessionUpdate> = mutableUpdates.asSharedFlow()
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<ByteArray>>()
     private val counter = AtomicLong(0)
@@ -101,7 +108,7 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
         }
     }
     private suspend fun runConnection(token: String, epoch: Long, onReady: () -> Unit): Unit = coroutineScope {
-        val frames = Channel<ByteArray>(64)
+        val frames = Channel<ByteArray>(512)
         val opened = CompletableDeferred<Unit>()
         val request = Request.Builder().url(url)
             .header("Origin", BaleEndpoint.ORIGIN).header("Cookie", "access_token=$token").build()

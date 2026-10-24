@@ -65,60 +65,18 @@ class FilesApi(
         if (!resp.duplicate) {
             if (resp.url.isBlank()) throw ProtocolException("Missing upload URL")
             val target = validateUrl(resp.url)
-            val chunk = resp.chunkSize
-            if (chunk > 0 && payload.bytes.size > chunk) uploadChunks(target, payload.bytes, chunk, token, onProgress)
-            else {
-                onProgress(0.02f)
-                putBytes(target, payload.bytes, token)
-                onProgress(1f)
-            }
+            // The web client always sends exactly one full-body PUT, whatever `chunkSize` says,
+            // and the endpoint accepts arbitrarily large files that way; partial PUTs are not
+            // implemented server-side (chunked sends never registered). Single stream it is.
+            onProgress(0.02f)
+            putBytes(target, payload.bytes, token)
+            onProgress(1f)
         } else {
             onProgress(1f)
         }
         // Fresh uploads are referenced by fileId alone; inventing an access hash is rejected for documents.
         return UploadedFile(resp.fileId, safeName, mime, payload.bytes.size)
     }
-
-    /** Chunked PUTs carry `chunk`/`no` headers (0-based index, total count) and end with an empty confirming PUT. */
-    private suspend fun uploadChunks(url: HttpUrl, data: ByteArray, chunkSize: Int, token: String?, onProgress: (Float) -> Unit) =
-        withContext(Dispatchers.IO) {
-            val total = (data.size + chunkSize - 1) / chunkSize
-            for (index in 0 until total) {
-                val from = index * chunkSize
-                val to = minOf(from + chunkSize, data.size)
-                val slice = data.copyOfRange(from, to)
-                val request = Request.Builder()
-                    .url(url)
-                    .header("Origin", BaleEndpoint.ORIGIN)
-                    .header("User-Agent", BaleEndpoint.USER_AGENT)
-                    .header("chunk", index.toString())
-                    .header("no", total.toString())
-                    .apply { if (!token.isNullOrBlank()) header("Cookie", "access_token=$token") }
-                    .put(slice.toRequestBody(UPLOAD_CONTENT_TYPE))
-                    .build()
-                http.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful && response.code != HTTP_CONFLICT) {
-                        throw IOException("Upload chunk $index/$total failed with HTTP ${response.code}")
-                    }
-                }
-                onProgress((index + 1).toFloat() / (total + 1).toFloat())
-            }
-            val finalRequest = Request.Builder()
-                .url(url)
-                .header("Origin", BaleEndpoint.ORIGIN)
-                .header("User-Agent", BaleEndpoint.USER_AGENT)
-                .header("chunk", total.toString())
-                .header("no", total.toString())
-                .apply { if (!token.isNullOrBlank()) header("Cookie", "access_token=$token") }
-                .put(ByteArray(0).toRequestBody(UPLOAD_CONTENT_TYPE))
-                .build()
-            http.newCall(finalRequest).execute().use { response ->
-                if (!response.isSuccessful && response.code != HTTP_CONFLICT) {
-                    throw IOException("Upload confirmation failed with HTTP ${response.code}")
-                }
-            }
-            onProgress(1f)
-        }
 
     suspend fun download(attachment: Attachment, token: String?, onProgress: (Float) -> Unit = {}): ByteArray {
         require(attachment.fileId != 0L) { "Missing file ID" }

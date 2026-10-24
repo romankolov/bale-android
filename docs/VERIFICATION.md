@@ -1,6 +1,6 @@
 # Verification
 
-## Release candidate `1.0.0-rc2` — live-device hardening round
+## Release candidate `1.0.0-rc3` — live-device hardening rounds (rc2 + liveness/upload fix-up)
 
 Ten issues from hands-on testing of the `1.0.0-rc1` APK were fixed at the data/network/UI layers:
 
@@ -10,17 +10,19 @@ Ten issues from hands-on testing of the `1.0.0-rc1` APK were fixed at the data/n
 2. **Numeric ids instead of names** — `LoadDialogs` users/groups stubs with blank names are
    re-fetched (cache-guarded against refetch loops); `UserNameChanged` updates rename the Room row
    live; message senders from pushes are queued, debounced (600 ms) and hydrated in one batch.
-3. **Non-image uploads failing** — fresh uploads no longer invent an access hash, documents no
-   longer carry an empty `ext` message, and chunked PUTs follow the server’s `chunkSize` answer
-   (`chunk`/`no` headers 0-based + empty confirming PUT, HTTP 409 tolerated; `duplicate` skips PUTs).
-4. **Stickers** — `StickerMessage` now sends ids + stored `format` only (the ImageLocation trio in
-   the generated model matches the web codec); previews render from the shared file cache.
+3. **Non-image uploads failing** — fresh uploads no longer invent an access hash and documents no
+   longer carry an empty `ext` message; uploads are always exactly one full-body streaming PUT
+   (the storage host never assembles partial chunk PUTs — splitting on `chunkSize` is what made
+   PDFs/videos fail in rc2 while images slipped through); HTTP 409 is tolerated, `duplicate` skips the PUT.
+4. **Stickers** — `StickerMessage` sends ids + stored `format` **and echoes the collection entry's
+   `ImageLocation` file reference** (`animation` for animated packs, `image256` for static) —
+   id-only sends were rejected by the server; previews render from the shared file cache.
 5. **Presence & typing** — new `PresenceApi` (`SetOnline`, `GetUsersPresence`, `SubscribeFromOnline`,
    `GetGroupOnlineCount`) feeding `peerPresence`/`groupOnlineCounts` state flows plus update
    events 7/8/9/33/34; the header falls back typing → online → last-seen → “N online”.
 6. **Stories per user** — the tray groups by owner with resolved name/avatar, pre-warms owner and
    media thumbs through the same cache, and hydrates channel titles from `Groups/LoadGroups`.
-7. **Voice codec** — Ogg/Opus 48 kHz 32 kbps via MediaCodec + in-repo Ogg muxer (5 JVM tests),
+7. **Voice codec** — Ogg/Opus 48 kHz 32 kbps via MediaCodec + in-repo Ogg muxer (6 JVM tests),
    automatic AAC fallback.
 8. **Download progress** — `FilesApi.download` streams percent; bubbles and the viewer show a
    determinate indicator; the VM clears entries in `finally`.
@@ -28,9 +30,13 @@ Ten issues from hands-on testing of the `1.0.0-rc1` APK were fixed at the data/n
    `LoadDialogs(archiveFilter=1)` and rejected when it would hide the entire visible list; pin
    state replaces exactly from `LoadPinnedDialogs`/`PinnedDialogsChanged`; `ChatArchive`,
    `DialogArchiveStatus` and `ChatShow` keep it in sync per event.
-10. **Not live until refresh** — socket messages now bump `conversations` (date/preview/unread,
-    seeding unknown peers), and the VM staleness poller refreshes dialogs + the open chat after
-    45 s of silence even if a push is lost.
+10. **Not live until refresh** — socket messages bump `conversations` (date/preview/unread, seeding
+    unknown peers) so the UI repaints the instant a push is applied. As a transport-agnostic floor,
+    a repository-owned staleness poller re-reads dialogs + the open chat every ~10 s while no push
+    arrives (2 s tick, 8 s threshold), and it goes idle by itself when pushes flow. Update fan-out
+    is non-suspending (256-slot `DROP_OLDEST` shared flow, 512-deep frame channel) so a busy
+    account gate can no longer backpressure the reader into tearing the connection — the failure
+    that capped latency at ~1 minute in rc2.
 
 ## Release-candidate gates
 
@@ -39,7 +45,7 @@ Each push runs four gates, and a fifth pair runs on both emulators:
 1. `protocol` (≈15 s): 12 wire-encoding tests, `generate_coverage.py --check` (**113** implemented
    RPCs of 699, per-service scope), `check_kotlin_consistency.py` (static cross-layer verification)
    and a Java-lite `protoc` generation check.
-2. `android`: 89 JVM unit tests across five modules, `:app:assembleDebug`, strict `:app:lintDebug`
+2. `android`: 90 JVM unit tests across five modules, `:app:assembleDebug`, strict `:app:lintDebug`
    (`warningsAsErrors = true`), `:app:assembleRelease` (R8 + resource shrinking + debug signing) and
    both androidTest APKs, plus the exported Room schema hash check (must stay
    `1c603993d1d1994bc9e00c0cae07c49d` for schema v3).
