@@ -178,10 +178,8 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
                         }
                         frame.hasPong() -> pong?.complete(frame.pong.id)
                         frame.hasUpdate() -> {
-                            val payload = frame.update.update.toByteArray()
                             pushedFrames.incrementAndGet()
-                            android.util.Log.i("BaleLive", "update frame #${pushedFrames.get()} (${payload.size} bytes)")
-                            mutableUpdates.emit(SessionUpdate(epoch, payload))
+                            mutableUpdates.emit(SessionUpdate(epoch, frame.update.update.toByteArray()))
                         }
                     }
                 }

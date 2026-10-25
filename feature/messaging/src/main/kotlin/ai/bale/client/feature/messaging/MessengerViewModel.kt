@@ -286,8 +286,9 @@ class MessengerViewModel @Inject constructor(
     /** Stickers/images whose bytes never arrived inline: pull them into the local cache so the bubble renders. */
     fun ensureAttachmentCached(attachment: Attachment) {
         if (attachment.fileId == 0L || mutableDownloaded.value.containsKey(attachment.fileId)) return
-        quiet {
-            val path = messenger.downloadMedia(attachment)
+        viewModelScope.launch {
+            // Best effort, and never an error banner: a failed prefetch just keeps the chip.
+            val path = runCatching { messenger.downloadMedia(attachment) }.getOrNull() ?: return@launch
             mutableDownloaded.update { it + (attachment.fileId to path) }
         }
     }
