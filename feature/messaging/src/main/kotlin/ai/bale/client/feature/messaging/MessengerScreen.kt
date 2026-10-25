@@ -75,6 +75,8 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
     val uploadingName by viewModel.uploadingAttachment.collectAsStateWithLifecycle()
     val queuing by viewModel.queuing.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val lastError by viewModel.lastError.collectAsStateWithLifecycle()
+    val liveStats by viewModel.liveStats.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val composer by viewModel.composer.collectAsStateWithLifecycle()
     val search by viewModel.searchState.collectAsStateWithLifecycle()
@@ -324,7 +326,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
 
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.safeDrawingPadding()) {
-            if (error) Notice(stringResource(R.string.action_failed), Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            if (error) Notice(stringResource(R.string.action_failed) + lastError?.let { ": $it" }.orEmpty(), Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             BoxWithConstraints(Modifier.weight(1f)) {
                 val expanded = maxWidth >= 840.dp
@@ -401,7 +403,8 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                                     onBack = viewModel::back,
                                     onInspect = viewModel::inspectSelectedPeer,
                                     onSend = viewModel::send,
-                                    onSendAttachment = { payload, caption -> viewModel.sendAttachment(payload, caption) },
+                                    onStageAttachment = viewModel::stageAttachment,
+                                    onClearStagedAttachment = viewModel::clearStagedAttachment,
                                     onAttachmentPickFailed = viewModel::reportOperationError,
                                     onOpenPollDialog = { showCreatePoll = true },
                                     onStartVoice = {
@@ -478,6 +481,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                                     onBotMenu = viewModel::openMiniApp,
                                     onShowPollVoters = viewModel::showPollVoters,
                                     onShowReactionVoters = viewModel::showReactionVoters,
+                                    onPrefetchAttachment = viewModel::ensureAttachmentCached,
                                     modifier = Modifier.weight(1f),
                                 )
                             } else if (expanded) {
@@ -509,6 +513,7 @@ fun MessengerScreen(viewModel: MessengerViewModel = hiltViewModel()) {
                             modifier = Modifier.weight(1f),
                         )
                         AppSection.Settings -> SettingsPane(
+                            live = liveStats,
                             account = account,
                             profile = ownProfile,
                             sessions = sessions,
@@ -681,7 +686,8 @@ private fun ChatPane(
     downloaded: Map<Long, String>, playingPath: String?, recordingVoice: Boolean,
     onBack: () -> Unit, onInspect: () -> Unit,
     onSend: (String, () -> Unit) -> Unit,
-    onSendAttachment: (UploadPayload, String) -> Unit,
+    onStageAttachment: (UploadPayload) -> Unit,
+    onClearStagedAttachment: () -> Unit,
     onAttachmentPickFailed: () -> Unit,
     onOpenPollDialog: () -> Unit,
     onStartVoice: () -> Unit,
@@ -715,6 +721,7 @@ private fun ChatPane(
     onBotMenu: () -> Unit = {},
     onShowPollVoters: (ChatMessage) -> Unit = {},
     onShowReactionVoters: (ChatMessage) -> Unit = {},
+    onPrefetchAttachment: (Attachment) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -729,9 +736,7 @@ private fun ChatPane(
             runCatching { readPickedUri(context, uri, forcePhotoOrVideo = true) }
                 .onSuccess { payload ->
                     followNewest = true
-                    val caption = draft
-                    draft = ""
-                    onSendAttachment(payload, caption)
+                    onStageAttachment(payload)
                 }
                 .onFailure { onAttachmentPickFailed() }
         }
@@ -741,9 +746,7 @@ private fun ChatPane(
             runCatching { readPickedUri(context, uri) }
                 .onSuccess { payload ->
                     followNewest = true
-                    val caption = draft
-                    draft = ""
-                    onSendAttachment(payload, caption)
+                    onStageAttachment(payload)
                 }
                 .onFailure { onAttachmentPickFailed() }
         }
@@ -844,6 +847,7 @@ private fun ChatPane(
                         onOpenThread = onOpenThread,
                         onShowPollVoters = onShowPollVoters,
                         onShowReactionVoters = onShowReactionVoters,
+                        onPrefetchAttachment = onPrefetchAttachment,
                     )
                 }
             }
@@ -946,6 +950,25 @@ private fun ChatPane(
                 onDismiss = onDismissSchedule,
             )
         }
+        composer.staged?.let { staged ->
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.weight(1f).testTag("staged_attachment"),
+                ) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(staged.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f, fill = false))
+                        Text("${staged.bytes.size / 1024} KB", style = MaterialTheme.typography.labelSmall)
+                        TextButton(onClick = onClearStagedAttachment) { Text(stringResource(R.string.remove)) }
+                    }
+                }
+            }
+        }
         val chatKeyboard = LocalSoftwareKeyboardController.current
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
             if (composer.edit == null) {
@@ -967,7 +990,7 @@ private fun ChatPane(
                 chatKeyboard?.hide()
                 if (composer.edit == null) followNewest = true
                 onSend(submitted) { if (composer.edit == null && draft == submitted) draft = "" }
-            }, enabled = input.isNotBlank() && !queuing, modifier = Modifier.heightIn(min = 56.dp)) {
+            }, enabled = (input.isNotBlank() || composer.staged != null) && !queuing, modifier = Modifier.heightIn(min = 56.dp)) {
                 Text(stringResource(if (composer.edit != null) R.string.save_message else R.string.send))
             }
         }
@@ -996,6 +1019,7 @@ private fun MessageBubble(
     onOpenThread: (ChatMessage) -> Unit = {},
     onShowPollVoters: (ChatMessage) -> Unit = {},
     onShowReactionVoters: (ChatMessage) -> Unit = {},
+    onPrefetchAttachment: (Attachment) -> Unit = {},
 ) {
     if (message.serviceNotice) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1048,6 +1072,11 @@ private fun MessageBubble(
                     }
                 }
                 message.attachment?.let { att ->
+                    // Location-backed stickers (received ones especially) ship no inline bytes:
+                    // fetch them into the media cache so the bubble renders instead of a bare chip.
+                    if (att.kind == AttachmentKind.Sticker && att.thumbnail.isEmpty() && att.fileId != 0L && downloadedPath == null) {
+                        LaunchedEffect(att.fileId) { onPrefetchAttachment(att) }
+                    }
                     val imagePreview = remember(att.fileId, downloadedPath) {
                         downloadedPath?.let { decodeSampledFileBitmap(it) } ?: decodeSampledBitmap(att.thumbnail, 480)
                     }

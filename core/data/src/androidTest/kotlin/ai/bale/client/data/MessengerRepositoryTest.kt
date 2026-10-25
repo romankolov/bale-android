@@ -290,8 +290,9 @@ class MessengerRepositoryTest {
             "Deck",
         )
         val uploadReq = rpc.requests.last { it.first == "GetNasimFileUploadUrl" }.second as Files_GetNasimFileUploadUrl_Request
-        assertEquals(777L, uploadReq.uid)
+        assertEquals(7L, uploadReq.uid) // uploads attribute to the signer; exPeer places the file
         assertEquals(3, uploadReq.exPeer.type)
+        assertFalse(uploadReq.hasSendType()) // documents omit sendType (web parity)
         val sentDocReq = rpc.requests.last { it.first == "SendMessage" }.second as Messaging_SendMessage_Request
         assertEquals(2, sentDocReq.peer.type)
         assertEquals(3, sentDocReq.exPeer.type)

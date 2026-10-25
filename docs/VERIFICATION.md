@@ -1,5 +1,28 @@
 # Verification
 
+## Release candidate `1.0.0-rc4` — upload parity, caption staging, observable liveness
+
+Third live-device round. What changed, with the official web bundle as the reference:
+
+1. **Non-image uploads** — `GetNasimFileUploadUrl` requests now match the web client exactly:
+   `uid` is always the signed-in account (the `exPeer` attributes the file to the chat) and
+   `sendType` is sent only when the storage host must transcode (photo/video/voice/audio);
+   documents and stickers omit it. Video picks probe width/height/duration with
+   `MediaMetadataRetriever` because zero-filled `DocumentExVideo` extensions are rejected.
+   Failed sends restore the staged file and caption for a retry without re-picking.
+2. **Captions** — the picker stages the file (chip with name/size and remove action); the composer
+   text becomes the caption and the send button dispatches it. Nothing uploads at pick time.
+3. **Stickers** — receives with only a file location now auto-fetch the image into the media
+   cache (bubbles render instead of a bare download chip). Sends keep echoing the collection
+   entry's `ImageLocation` reference.
+4. **Liveness, observable** — every socket-side update frame is counted (and logged under
+   `BaleLive`); the repository poller runs two modes: while the server has never pushed a frame
+   to this session it re-reads dialogs + the open chat every 4 s (guaranteeing "live" by polling
+   alone), and once pushes flow it only refreshes after 30 s of silence. Opening a chat triggers
+   an immediate history catch-up. Settings shows a live-diagnostics line (connection, frames
+   received vs applied, poll rounds, last-push age), and failed operations now surface the server's
+   own error reason instead of a generic notice.
+
 ## Release candidate `1.0.0-rc3` — live-device hardening rounds (rc2 + liveness/upload fix-up)
 
 Ten issues from hands-on testing of the `1.0.0-rc1` APK were fixed at the data/network/UI layers:

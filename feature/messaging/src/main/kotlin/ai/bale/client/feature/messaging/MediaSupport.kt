@@ -72,13 +72,25 @@ internal suspend fun readPickedUri(context: Context, uri: Uri, forcePhotoOrVideo
         }
         var width = 0
         var height = 0
+        var durationSeconds = 0
         if (kind == AttachmentKind.Photo) {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             width = bounds.outWidth.coerceAtLeast(0)
             height = bounds.outHeight.coerceAtLeast(0)
+        } else if (kind == AttachmentKind.Video) {
+            // Video attachments ship DocumentExVideo{w,h,duration}; zero-filled extensions are
+            // rejected server-side, so probe the container before sending.
+            runCatching {
+                android.media.MediaMetadataRetriever().use { retriever ->
+                    retriever.setDataSource(context, uri)
+                    width = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                    height = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                    durationSeconds = ((retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000L).toInt()
+                }
+            }
         }
-        UploadPayload(name = displayName, mimeType = mime, bytes = bytes, kind = kind, width = width, height = height)
+        UploadPayload(name = displayName, mimeType = mime, bytes = bytes, kind = kind, width = width, height = height, durationSeconds = durationSeconds)
     }
 
 internal fun decodeSampledBitmap(bytes: ByteArray, maxDimension: Int = 720): ImageBitmap? {

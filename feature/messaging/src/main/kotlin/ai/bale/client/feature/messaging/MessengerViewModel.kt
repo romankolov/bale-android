@@ -12,7 +12,11 @@ import kotlinx.coroutines.flow.*
 import javax.inject.Inject
 
 enum class AppSection { Chats, Contacts, Stories, Settings }
-data class ComposerState(val reply: ChatMessage? = null, val edit: ChatMessage? = null)
+data class ComposerState(
+    val reply: ChatMessage? = null,
+    val edit: ChatMessage? = null,
+    val staged: UploadPayload? = null,
+)
 data class SearchState(val open: Boolean = false, val busy: Boolean = false, val page: SearchPage? = null, val failed: Boolean = false)
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
@@ -222,6 +226,15 @@ class MessengerViewModel @Inject constructor(
         val peer = selected.value ?: return
         val origin = account.value?.id ?: return
         val composition = composer.value
+        composition.staged?.let { staged ->
+            // A staged file turns the composer's text into its caption; media sends run outside
+            // the text pipeline so the input is never "consumed" as a plain message.
+            stopTyping()
+            mutableDraftText.value = ""
+            onQueued()
+            sendAttachment(staged, text)
+            return
+        }
         if (mutableQueuing.value) return
         mutableQueuing.value = true
         stopTyping()
@@ -252,20 +265,50 @@ class MessengerViewModel @Inject constructor(
     private val mutableUploadProgress = MutableStateFlow<Float?>(null)
     val uploadProgress = mutableUploadProgress.asStateFlow()
 
+    /** Telemetry for the push pipeline (settings surface). */
+    val liveStats get() = messenger.liveStats
+
+    private val mutableLastError = MutableStateFlow<String?>(null)
+    val lastError = mutableLastError.asStateFlow()
+
     private val mutableDownloadProgress = MutableStateFlow<Map<Long, Float>>(emptyMap())
     val downloadProgress = mutableDownloadProgress.asStateFlow()
+
+    /** The picker stages the file; the composer's send button attaches it to the current caption. */
+    fun stageAttachment(payload: UploadPayload) {
+        mutableComposer.update { it.copy(staged = payload) }
+    }
+
+    fun clearStagedAttachment() {
+        mutableComposer.update { it.copy(staged = null) }
+    }
+
+    /** Stickers/images whose bytes never arrived inline: pull them into the local cache so the bubble renders. */
+    fun ensureAttachmentCached(attachment: Attachment) {
+        if (attachment.fileId == 0L || mutableDownloaded.value.containsKey(attachment.fileId)) return
+        quiet {
+            val path = messenger.downloadMedia(attachment)
+            mutableDownloaded.update { it + (attachment.fileId to path) }
+        }
+    }
 
     fun sendAttachment(payload: UploadPayload, caption: String = "") {
         val peer = selected.value ?: return
         val reply = composer.value.reply
         mutableComposer.value = ComposerState()
         operation {
+            mutableLastError.value = null
             mutableUploading.value = payload.name
             mutableUploadProgress.value = 0f
             try {
                 messenger.sendMediaWithProgress(peer, payload, caption, reply) { progress ->
                     mutableUploadProgress.value = progress.coerceIn(0f, 1f)
                 }
+            } catch (failure: Exception) {
+                // Keep the pick (and the caption) intact so the user can retry without re-selecting.
+                mutableComposer.update { it.copy(staged = payload) }
+                if (caption.isNotBlank()) mutableDraftText.value = caption
+                throw failure
             } finally {
                 mutableUploading.value = null
                 mutableUploadProgress.value = null
@@ -1004,7 +1047,11 @@ class MessengerViewModel @Inject constructor(
         mutableError.value = false
         try { block() }
         catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { mutableError.value = true }
+        catch (error: Exception) {
+            mutableError.value = true
+            mutableLastError.value = if (error is RpcException) error.reason.takeIf { it.isNotBlank() }
+                ?: error.message else error.message ?: error.javaClass.simpleName
+        }
         finally { if (showLoading) operations.update { it - 1 } }
     }
 

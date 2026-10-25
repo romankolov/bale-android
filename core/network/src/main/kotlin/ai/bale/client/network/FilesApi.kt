@@ -39,22 +39,25 @@ class FilesApi(
         require(payload.bytes.isNotEmpty() && payload.bytes.size <= MAX_MEDIA_BYTES) { "Invalid media size" }
         val mime = payload.mimeType.ifBlank { "application/octet-stream" }
         val safeName = sanitizeFileName(payload.name, mime)
+        // The web client's upload-url request only carries a sendType when the storage host must
+        // transcode (photo/video/voice/audio). Documents and stickers ship as `sendType` absent —
+        // forcing `document`/`sticker` values there is what made every non-image PUT unusable.
         val sendType = when (payload.kind) {
             AttachmentKind.Photo -> SEND_PHOTO
             AttachmentKind.Video -> SEND_VIDEO
             AttachmentKind.Voice -> SEND_VOICE
             AttachmentKind.Audio -> SEND_AUDIO
-            AttachmentKind.Sticker -> SEND_STICKER
-            AttachmentKind.Document -> SEND_DOCUMENT
+            else -> null
         }
         val resolvedExType = exPeerType.takeIf { it > 0 } ?: (peer?.kind ?: ExPeerKind.PRIVATE)
-        val uploaderUid = if (resolvedExType == ExPeerKind.CHANNEL && peer != null) peer.id.toLong() else accountId.toLong()
         val req = Files_GetNasimFileUploadUrl_Request.newBuilder()
             .setExpectedSize(payload.bytes.size)
-            .setUid(uploaderUid)
+            // The reference client uploads always as the signed-in account, even for channels:
+            // the exPeer (not uid) attributes the file to the chat.
+            .setUid(accountId.toLong())
             .setName(safeName)
             .setMimeType(mime)
-            .setSendType(SendType.newBuilder().setType(sendType))
+            .apply { sendType?.let { setSendType(SendType.newBuilder().setType(it)) } }
             .apply { if (peer != null) setExPeer(peer.exWire(resolvedExType)) }
             .build()
         val resp = Files_GetNasimFileUploadUrl_Response.parseFrom(
@@ -156,8 +159,6 @@ class FilesApi(
         const val SEND_VIDEO = 2
         const val SEND_VOICE = 3
         const val SEND_AUDIO = 5
-        const val SEND_DOCUMENT = 6
-        const val SEND_STICKER = 7
         const val HTTP_CONFLICT = 409
         private val UPLOAD_CONTENT_TYPE = "multipart/form-data".toMediaType()
 

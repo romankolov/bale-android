@@ -269,4 +269,5 @@
     <string name="downloading_percent">در حال دریافت… %1$d%%</string>
     <string name="uploading_percent">در حال بارگذاری %1$s… %2$d%%</string>
     <string name="story_count">%1$d داستان</string>
+    <string name="live_diagnostics">تشخیص زنده</string>
 </resources>

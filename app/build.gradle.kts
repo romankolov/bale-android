@@ -12,8 +12,8 @@ android {
         applicationId = "ai.bale.client"
         minSdk = 29
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.0.0-rc3"
+        versionCode = 5
+        versionName = "1.0.0-rc4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }

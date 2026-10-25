@@ -269,4 +269,5 @@
     <string name="downloading_percent">Downloading… %1$d%%</string>
     <string name="uploading_percent">Uploading %1$s… %2$d%%</string>
     <string name="story_count">%1$d stories</string>
+    <string name="live_diagnostics">Live diagnostics</string>
 </resources>

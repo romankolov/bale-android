@@ -66,11 +66,20 @@ internal class DefaultMessengerRepository(
     private val pendingSenderIds: MutableSet<Int> = Collections.newSetFromMap(ConcurrentHashMap())
     private val mutableLastPushAt = MutableStateFlow(0L)
     override val lastPushAt: StateFlow<Long> = mutableLastPushAt.asStateFlow()
+    private val mutableLiveStats = MutableStateFlow(LiveStats())
+    override val liveStats: StateFlow<LiveStats> = mutableLiveStats.asStateFlow()
+    private val appliedPushes = java.util.concurrent.atomic.AtomicLong(0)
+    private val pollRounds = java.util.concurrent.atomic.AtomicLong(0)
     private var onlineAnnouncedSession = 0L
     @Volatile private var foregroundPeer: Peer? = null
 
     override fun noteForegroundPeer(peer: Peer?) {
         foregroundPeer = peer
+        if (peer != null) {
+            // Opening (or returning to) a chat must show the freshest server state immediately —
+            // do not wait for the next push or poll round.
+            scope.launch { safely { loadHistory(peer) } }
+        }
     }
     private val inFlightAvatars: MutableSet<Long> = Collections.newSetFromMap(ConcurrentHashMap())
 
@@ -316,17 +325,33 @@ internal class DefaultMessengerRepository(
             }
         }
         scope.launch {
-            // Push-staleness watchdog: the socket should keep lastPushAt moving. If it has been
-            // quiet while still reporting Connected, re-poll the dialogs and the open chat once per
-            // window so the list never depends on a manual pull-to-refresh.
+            // Fallback poller with two modes. While the socket has never pushed a frame in this
+            // session (server-side push routing problem), poll every tick so "live" is guaranteed
+            // by polling alone. Once pushes flow, only refresh when they fall quiet for
+            // PUSH_STALE_MS — idle chats then cost zero extra RPCs.
             while (isActive) {
-                delay(2_000)
-                if (socket.state.value != Connection.Connected) continue
-                if (System.currentTimeMillis() - mutableLastPushAt.value <= PUSH_STALE_MS) continue
-                mutableLastPushAt.value = System.currentTimeMillis()
-                val foreground = foregroundPeer
-                safely { refreshConversations() }
-                if (foreground != null) safely { loadHistory(foreground) }
+                delay(4_000)
+                val connected = socket.state.value == Connection.Connected
+                val pushes = socket.pushFrames
+                val applied = appliedPushes.get()
+                if (connected) {
+                    val quiet = System.currentTimeMillis() - mutableLastPushAt.value
+                    if (pushes == 0L || quiet > PUSH_STALE_MS) {
+                        if (pushes != 0L) mutableLastPushAt.value = System.currentTimeMillis()
+                        val foreground = foregroundPeer
+                        safely { refreshConversations() }
+                        if (foreground != null) safely { loadHistory(foreground) }
+                        pollRounds.incrementAndGet()
+                    }
+                }
+                mutableLiveStats.value = LiveStats(
+                    connection = socket.state.value,
+                    socketPushes = pushes,
+                    appliedPushes = applied,
+                    polls = pollRounds.get(),
+                    lastPushAgeSec = if (mutableLastPushAt.value == 0L) -1 else (System.currentTimeMillis() - mutableLastPushAt.value) / 1000,
+                    pushStarved = pushes == 0L,
+                )
             }
         }
         scope.launch {
@@ -1781,6 +1806,7 @@ internal class DefaultMessengerRepository(
 
     private suspend fun applyUpdate(update: Update, session: Long) {
         mutableLastPushAt.value = System.currentTimeMillis()
+        appliedPushes.incrementAndGet()
         val account = auth.account.value ?: return
         val mutedPeers = preferencesStore.overlayFor(account.id).mutedPeers
         var notifyTitle: String? = null
@@ -2064,5 +2090,5 @@ internal class DefaultMessengerRepository(
         try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { /* user retry/reconnect remains available; no private payload logging */ }
     }
 
-    companion object { const val OLDER = -2L; const val METADATA_PAGE_SIZE = 100; const val PUSH_STALE_MS = 8_000L }
+    companion object { const val OLDER = -2L; const val METADATA_PAGE_SIZE = 100; const val PUSH_STALE_MS = 30_000L }
 }

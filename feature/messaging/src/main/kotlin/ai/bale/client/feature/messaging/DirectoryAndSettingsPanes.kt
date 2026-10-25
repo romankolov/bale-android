@@ -260,6 +260,7 @@ internal fun SettingsPane(
     onUnblock: (Peer) -> Unit = {},
     onDeleteFolder: (Int) -> Unit = {},
     onOpenSaved: () -> Unit = {},
+    live: LiveStats? = null,
 ) {
     var twoFactorEmail by rememberSaveable { mutableStateOf("") }
     var twoFactorPassword by rememberSaveable { mutableStateOf("") }
@@ -456,6 +457,20 @@ internal fun SettingsPane(
                         Text(stringResource(R.string.saved_messages))
                     }
                 }
+            }
+        }
+        live?.let { stats ->
+            item {
+                Text(
+                    text = stringResource(R.string.live_diagnostics) + " — " +
+                        "${stats.connection}, push ${stats.socketPushes} recv/${stats.appliedPushes} applied, " +
+                        "poll ${stats.polls}, " +
+                        (if (stats.lastPushAgeSec >= 0) "last push ${stats.lastPushAgeSec}s ago" else "no push yet") +
+                        if (stats.pushStarved) " (push-starved: polling carries updates)" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).testTag("live_diagnostics"),
+                )
             }
         }
         item {

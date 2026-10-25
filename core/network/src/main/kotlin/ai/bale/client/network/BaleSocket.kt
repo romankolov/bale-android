@@ -33,6 +33,8 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
     )
     override val updates: SharedFlow<SessionUpdate> = mutableUpdates.asSharedFlow()
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<ByteArray>>()
+    private val pushedFrames = java.util.concurrent.atomic.AtomicLong(0)
+    override val pushFrames: Long get() = pushedFrames.get()
     private val counter = AtomicLong(0)
     private val lifecycle = Mutex()
     private val sessionEpoch = AtomicLong(0)
@@ -175,7 +177,12 @@ class BaleSocket(private val client: OkHttpClient, private val scope: CoroutineS
                             }
                         }
                         frame.hasPong() -> pong?.complete(frame.pong.id)
-                        frame.hasUpdate() -> mutableUpdates.emit(SessionUpdate(epoch, frame.update.update.toByteArray()))
+                        frame.hasUpdate() -> {
+                            val payload = frame.update.update.toByteArray()
+                            pushedFrames.incrementAndGet()
+                            android.util.Log.i("BaleLive", "update frame #${pushedFrames.get()} (${payload.size} bytes)")
+                            mutableUpdates.emit(SessionUpdate(epoch, payload))
+                        }
                     }
                 }
                 throw IOException("WebSocket ended")

@@ -402,6 +402,16 @@ interface AuthRepository {
     suspend fun disableTwoFactor() = Unit
 }
 
+/** What the live pipeline is doing right now — surfaced in settings for field diagnosis. */
+data class LiveStats(
+    val connection: Connection = Connection.Disconnected,
+    val socketPushes: Long = 0,
+    val appliedPushes: Long = 0,
+    val polls: Long = 0,
+    val lastPushAgeSec: Long = -1,
+    val pushStarved: Boolean = false,
+)
+
 interface MessengerRepository {
     val connection: StateFlow<Connection>
     val onlineUsers: StateFlow<Set<Int>> get() = EMPTY_ONLINE
@@ -412,7 +422,10 @@ interface MessengerRepository {
     val preferences: StateFlow<ClientPreferences> get() = DEFAULT_PREFERENCES
     /** Epoch millis of the last socket-pushed update; staleness drives the fallback poller. */
     val lastPushAt: StateFlow<Long> get() = NEVER_PUSHED
+    /** Push/poll telemetry for field diagnosis (settings surface). */
+    val liveStats: StateFlow<LiveStats> get() = EMPTY_LIVE_STATS
     val avatarPaths: StateFlow<Map<Long, String>> get() = EMPTY_AVATAR_PATHS
+
     val folders: StateFlow<List<ChatFolder>> get() = EMPTY_FOLDERS
 
     fun conversations(): Flow<List<Conversation>>
@@ -536,6 +549,7 @@ private val DEFAULT_PREFERENCES = MutableStateFlow(ClientPreferences())
 private val EMPTY_AVATAR_PATHS = MutableStateFlow(emptyMap<Long, String>())
 private val EMPTY_FOLDERS = MutableStateFlow(emptyList<ChatFolder>())
 private val EMPTY_PRESENCE = MutableStateFlow(emptyMap<Int, PeerPresence>())
+private val EMPTY_LIVE_STATS = MutableStateFlow(LiveStats())
 private val EMPTY_GROUP_ONLINE = MutableStateFlow(emptyMap<Int, Int>())
 private val NEVER_PUSHED = MutableStateFlow(0L)
 

@@ -83,11 +83,13 @@ class FilesAndDirectoryApiTest {
             assertEquals("access_token=fixture-jwt", putReq.getHeader("Cookie"))
             assertEquals(0, server.requestCount - 1)
 
-            // Channel uploads use the channel peer.id as the uploader uid.
+            // Every upload is attributed to the signed-in account (uid = self, even for channels —
+            // the exPeer is what places the file in the chat), and documents carry no sendType.
             val pdfPayload = UploadPayload("report", "application/pdf", byteArrayOf(9, 9, 9), AttachmentKind.Document)
             val chanUploaded = api.upload(7, pdfPayload, Peer(777, 2, 999), "fixture-jwt", exPeerType = ExPeerKind.CHANNEL)
             val chanUploadReq = rpc.calls.last().third as Files_GetNasimFileUploadUrl_Request
-            assertEquals(777L, chanUploadReq.uid)
+            assertEquals(7L, chanUploadReq.uid)
+            assertFalse(chanUploadReq.hasSendType())
             assertEquals(ExPeerKind.CHANNEL, chanUploadReq.exPeer.type)
             assertEquals("report.pdf", chanUploadReq.name)
             assertEquals(0L, chanUploaded.ownerAccessHash)
